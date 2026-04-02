@@ -45,6 +45,8 @@ jobs:
 
       - uses: astral-sh/setup-uv@v6
 
+      - run: uv run --extra dev playwright install --with-deps chromium
+
       - run: uv run --extra dev python -m pytest -q
 
   release:
