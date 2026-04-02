@@ -5,6 +5,7 @@ Notebook-first execution system built on top of Jupyter shared documents
 ## Quick Start
 
 ```bash
+uv sync --extra dev
 uv run hypernote --help
 uv run hypernote create tmp/demo.ipynb
 uv run hypernote ix tmp/demo.ipynb -s 'value = 20 + 22\nprint(value)'
@@ -118,6 +119,15 @@ Default CLI contract:
   - browser regression for streaming and late-open correctness
 
 ## Verification
+
+Install guidance:
+
+- `uv sync`
+  - base Hypernote runtime/server usage
+- `uv sync --extra lab`
+  - adds the collaborative JupyterLab bundle
+- `uv sync --extra dev`
+  - adds local development, lint, test, and browser-validation tooling
 
 Minimum checks for most changes:
 

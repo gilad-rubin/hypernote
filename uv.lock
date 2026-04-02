@@ -614,45 +614,49 @@ wheels = [
 
 [[package]]
 name = "hypernote"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
     { name = "httpx" },
-    { name = "jupyter-collaboration" },
     { name = "jupyter-server" },
     { name = "jupyter-server-nbmodel" },
-    { name = "jupyter-ydoc" },
+    { name = "jupyter-server-ydoc" },
     { name = "pycrdt" },
-    { name = "pycrdt-websocket" },
 ]
 
 [package.optional-dependencies]
 dev = [
+    { name = "jupyter-collaboration" },
+    { name = "jupyterlab" },
     { name = "playwright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "ruff" },
 ]
+lab = [
+    { name = "jupyter-collaboration" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.0" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "jupyter-collaboration", specifier = ">=3.0" },
+    { name = "jupyter-collaboration", marker = "extra == 'dev'", specifier = ">=3.0" },
+    { name = "jupyter-collaboration", marker = "extra == 'lab'", specifier = ">=3.0" },
     { name = "jupyter-server", specifier = ">=2.0" },
     { name = "jupyter-server-nbmodel", specifier = ">=0.1" },
-    { name = "jupyter-ydoc", specifier = ">=2.0" },
+    { name = "jupyter-server-ydoc", specifier = ">=1.0" },
+    { name = "jupyterlab", marker = "extra == 'dev'", specifier = ">=4.0" },
     { name = "playwright", marker = "extra == 'dev'", specifier = ">=1.40" },
     { name = "pycrdt", specifier = ">=0.12" },
-    { name = "pycrdt-websocket", specifier = ">=0.15" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "lab"]
 
 [[package]]
 name = "idna"

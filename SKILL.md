@@ -45,6 +45,16 @@ uv run hypernote status tmp/demo.ipynb --full
 
 ## Verification
 
+Install the right tier first:
+
+```bash
+uv sync --extra dev
+```
+
+Use `uv sync` for base runtime work and `uv sync --extra lab` when you specifically need the full collaborative JupyterLab bundle without the rest of the dev toolchain.
+
+Then run:
+
 ```bash
 uv run ruff check hypernote tests
 uv run python -m pytest -q

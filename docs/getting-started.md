@@ -1,5 +1,24 @@
 # Getting Started
 
+## Install
+
+Pick the smallest install that matches what you need:
+
+- `hypernote`
+  - notebook-first SDK, CLI, Jupyter server extension, and shared-document execution path
+- `hypernote[lab]`
+  - base install plus JupyterLab collaboration support
+- `hypernote[dev]`
+  - base install plus local development, test, lint, and browser-validation tooling
+
+Examples:
+
+```bash
+uv sync
+uv sync --extra lab
+uv sync --extra dev
+```
+
 ## CLI happy path
 
 ```bash

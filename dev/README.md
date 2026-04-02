@@ -12,7 +12,7 @@ Read these first:
 
 Release path:
 
-- pushing a tag like `v0.1.0` runs [release.yml](/Users/giladrubin/python_workspace/hypernote/.github/workflows/release.yml)
+- pushing a tag like `v0.1.2` runs [release.yml](/Users/giladrubin/python_workspace/hypernote/.github/workflows/release.yml)
 - the workflow verifies the tag matches `pyproject.toml`, builds `dist/`, creates or updates the GitHub release with `gh`, and publishes to PyPI as `hypernote`
 - PyPI auth comes from the GitHub Actions secret `PYPI_API_TOKEN`
 

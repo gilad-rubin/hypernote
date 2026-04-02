@@ -17,11 +17,31 @@
 ## Quick start
 
 ```bash
-uv sync --all-extras
+uv sync
 uv run hypernote --help
 uv run hypernote create tmp/demo.ipynb
 uv run hypernote ix tmp/demo.ipynb -s 'value = 20 + 22\nprint(value)'
 uv run hypernote status tmp/demo.ipynb --full
+```
+
+## Install tiers
+
+- `hypernote`
+  - core + server + shared-doc runtime
+  - use this for real Hypernote SDK/server usage
+- `hypernote[lab]`
+  - adds the JupyterLab collaboration bundle
+  - use this when you want the full collaborative JupyterLab experience
+- `hypernote[dev]`
+  - adds test, lint, browser, and local dev tooling
+  - use this for local development and CI
+
+Examples:
+
+```bash
+uv sync
+uv sync --extra lab
+uv sync --extra dev
 ```
 
 ## Mental model
@@ -48,6 +68,12 @@ Hypernote owns:
 - [Runtime Model](/Users/giladrubin/python_workspace/hypernote/docs/runtime-model.md)
 
 ## Verification
+
+For local development and CI, install the dev tier first:
+
+```bash
+uv sync --extra dev
+```
 
 ```bash
 uv run ruff check hypernote tests
