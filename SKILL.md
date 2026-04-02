@@ -35,6 +35,7 @@ uv run hypernote status tmp/demo.ipynb --full
 5. Use `--stream-json` only when you plan to watch the process; otherwise it wastes context.
 6. Use unique notebook paths in tests and demos.
 7. Move durable notes into `docs/` or `dev/`; keep `tmp/` disposable.
+8. Treat Hypernote jobs, runtime state, and cell attribution as ephemeral coordination state, not durable history.
 
 ## Before You Change Behavior
 

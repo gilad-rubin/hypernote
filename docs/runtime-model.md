@@ -17,12 +17,22 @@ Jupyter owns the notebook document and kernel primitives. Hypernote owns the con
 - SDK and CLI surfaces
 - thin HTTP handlers over the shared-document and execution path
 
+Hypernote-owned control-plane state is intentionally ephemeral:
+
+- runtimes are in-memory and notebook-scoped
+- job records are for live coordination and recent status, not durable audit history
+- cell attribution currently lives in the same in-memory control plane
+- stopping a runtime, GC eviction, or restarting the server clears that control-plane state
+
+Notebook contents and outputs still persist because Jupyter owns the `.ipynb` document.
+
 ## Invariants
 
 - notebook edits and execution must use one logical document truth
 - open or closed JupyterLab tabs must not change correctness
 - opening a notebook mid-execution should show already-produced output immediately
 - late-open should continue streaming without restarting or duplicating execution
+- clients must not treat job history or attribution as durable across runtime stop or server restart
 
 ## Runtime states
 

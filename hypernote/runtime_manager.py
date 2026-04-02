@@ -8,13 +8,14 @@ semantics instead of being implicitly owned by a UI tab or CLI process.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from tornado import web
 
@@ -34,7 +35,6 @@ class RuntimeState(str, Enum):
 @dataclass
 class RuntimePolicy:
     idle_ttl_seconds: float = 3600.0
-    max_age_seconds: float | None = None
     gc_interval_seconds: float = 60.0
 
 
@@ -49,7 +49,6 @@ class NotebookRoom:
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
     attached_clients: set[str] = field(default_factory=set)
-    pinned: bool = False
     active_jobs: set[str] = field(default_factory=set)
     job_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
@@ -70,10 +69,12 @@ class RuntimeManager:
         session_manager: Any,
         kernel_manager: Any,
         policy: RuntimePolicy | None = None,
+        on_notebook_stopped: Callable[[str], Awaitable[None] | None] | None = None,
     ):
         self._session_manager = session_manager
         self._kernel_manager = kernel_manager
         self._policy = policy or RuntimePolicy()
+        self._on_notebook_stopped = on_notebook_stopped
         self._rooms: dict[str, NotebookRoom] = {}
         self._notebook_to_room: dict[str, str] = {}
         self._gc_task: asyncio.Task | None = None
@@ -191,6 +192,10 @@ class RuntimeManager:
             room.attached_clients.clear()
             room.active_jobs.clear()
             room.last_activity = time.time()
+            self._notebook_to_room.pop(room.notebook_id, None)
+            self._rooms.pop(room.room_id, None)
+
+        await self._notify_notebook_stopped(room.notebook_id)
         return room
 
     async def interrupt_runtime(self, room_id: str) -> None:
@@ -201,13 +206,6 @@ class RuntimeManager:
             raise ValueError(f"Room {room_id} has no live kernel")
         await self._kernel_manager.interrupt_kernel(room.kernel_id)
         room.last_activity = time.time()
-
-    async def recover_room(self, notebook_id: str, client_id: str) -> NotebookRoom:
-        """Reattach a client to a detached room if it is still live."""
-        room = await self._load_or_refresh_room(notebook_id)
-        if room is None or not room.is_live:
-            raise ValueError(f"No recoverable runtime for notebook {notebook_id}")
-        return await self.attach_client(room.room_id, client_id)
 
     async def get_runtime_status(self, notebook_id: str) -> dict[str, Any]:
         room = await self._load_or_refresh_room(notebook_id)
@@ -248,12 +246,6 @@ class RuntimeManager:
         if room is not None:
             room.last_activity = time.time()
 
-    def pin_runtime(self, room_id: str, pinned: bool = True) -> None:
-        room = self._rooms.get(room_id)
-        if room is not None:
-            room.pinned = pinned
-            room.last_activity = time.time()
-
     def mark_job_started(self, notebook_id: str, job_id: str) -> None:
         room = self.get_room_for_notebook(notebook_id)
         if room is not None:
@@ -270,7 +262,7 @@ class RuntimeManager:
         now = time.time()
         to_stop: list[str] = []
         for room in self._rooms.values():
-            if room.pinned or room.state in {
+            if room.state in {
                 RuntimeState.STOPPING,
                 RuntimeState.STOPPED,
                 RuntimeState.FAILED,
@@ -281,11 +273,7 @@ class RuntimeManager:
                 room.state == RuntimeState.LIVE_DETACHED
                 and now - room.last_activity > self._policy.idle_ttl_seconds
             )
-            expired = (
-                self._policy.max_age_seconds is not None
-                and now - room.created_at > self._policy.max_age_seconds
-            )
-            if idle or expired:
+            if idle:
                 to_stop.append(room.room_id)
 
         stopped: list[str] = []
@@ -351,3 +339,13 @@ class RuntimeManager:
         self._rooms[room.room_id] = room
         self._notebook_to_room[notebook_id] = room.room_id
         return room
+
+    async def _notify_notebook_stopped(self, notebook_id: str) -> None:
+        if self._on_notebook_stopped is None:
+            return
+        try:
+            result = self._on_notebook_stopped(notebook_id)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            logger.exception("Failed to evict notebook state for %s", notebook_id)

@@ -31,9 +31,11 @@ Hypernote owns a thin control plane:
 - runtime ownership in [hypernote/runtime_manager.py](/Users/giladrubin/python_workspace/hypernote/hypernote/runtime_manager.py)
 - HTTP handlers in [hypernote/server/handlers.py](/Users/giladrubin/python_workspace/hypernote/hypernote/server/handlers.py)
 - Jupyter extension wiring in [hypernote/server/extension.py](/Users/giladrubin/python_workspace/hypernote/hypernote/server/extension.py)
-- actor attribution in [hypernote/actor_ledger.py](/Users/giladrubin/python_workspace/hypernote/hypernote/actor_ledger.py)
+- ephemeral job and attribution ledger in [hypernote/actor_ledger.py](/Users/giladrubin/python_workspace/hypernote/hypernote/actor_ledger.py)
 
 Core rule: notebook edits and execution must operate on one logical document truth whether JupyterLab is closed, already open, or opened mid-run.
+
+Lifecycle rule: notebook contents and outputs persist through Jupyter's `.ipynb` model, but Hypernote's runtime state, job records, and cell attribution are intentionally in-memory and notebook-scoped.
 
 ## Shipped Surface
 
@@ -69,9 +71,11 @@ Default CLI contract:
 
 ## Rules
 
+- Terminology: when the user says "our system", treat that as the maintained project-operating surface, including `AGENTS.md`, `SKILL.md`, `docs/`, `dev/`, tests, and other shared guidance or verification artifacts around the code.
 - SDK first. CLI behavior should come from the SDK, not duplicate raw HTTP semantics.
 - One truth. Do not reintroduce a contents-vs-YDoc split for notebook reads or writes.
-- Docs are part of done. When the public workflow changes, update `AGENTS.md`, `SKILL.md`, `docs/`, and `dev/` together.
+- Keep control-plane state ephemeral. Do not add durable job history unless the product explicitly needs it.
+- Our system is part of done. After every meaningful change, update the relevant parts of `AGENTS.md`, `SKILL.md`, `docs/`, `dev/`, tests, and adjacent shared project guidance so they stay in sync with implementation.
 - Keep adapters thin. CLI, JupyterLab, and tests should reuse shared contracts instead of re-encoding notebook behavior.
 - Prefer unique notebook paths in tests and demos. Browser tests must also use unique JupyterLab workspace URLs.
 - Keep `tmp/` disposable. Durable notes belong in `docs/` or `dev/`, not `tmp/`.

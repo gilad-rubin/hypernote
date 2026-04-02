@@ -18,7 +18,7 @@ from jupyter_server_ydoc.rooms import DocumentRoom
 from jupyter_server_ydoc.utils import encode_file_path, room_id_from_encoded_path
 from pycrdt import Map
 
-from hypernote.actor_ledger import ActorLedger, ActorType, Job, JobAction, JobStatus
+from hypernote.actor_ledger import ActorType, Job, JobAction, JobStatus, Ledger
 from hypernote.runtime_manager import RuntimeManager, RuntimeState
 
 logger = logging.getLogger(__name__)
@@ -322,7 +322,7 @@ class ExecutionOrchestrator:
 
     def __init__(
         self,
-        ledger: ActorLedger,
+        ledger: Ledger,
         runtime_mgr: RuntimeManager,
         execution_stack: Any,
         notebook_accessor: SharedNotebookAccessor,
@@ -331,9 +331,11 @@ class ExecutionOrchestrator:
         self._runtime_mgr = runtime_mgr
         self._stack = execution_stack
         self._notebook = notebook_accessor
+        self._awaiting_input_signatures: dict[str, str] = {}
+        self._resumed_input_signatures: dict[str, str] = {}
 
     @property
-    def ledger(self) -> ActorLedger:
+    def ledger(self) -> Ledger:
         return self._ledger
 
     @property
@@ -434,11 +436,18 @@ class ExecutionOrchestrator:
             if result is None:
                 await asyncio.sleep(0.1)
                 continue
-            if result.get("input_request") is not None:
-                await self._ledger.update_job_status(job_id, JobStatus.AWAITING_INPUT)
-                self._runtime_mgr.set_runtime_state(room_id, RuntimeState.AWAITING_INPUT)
+            input_request = result.get("input_request")
+            if input_request is not None:
+                signature = _input_request_signature(input_request)
+                self._awaiting_input_signatures[job_id] = signature
+                if self._resumed_input_signatures.get(job_id) != signature:
+                    await self._ledger.update_job_status(job_id, JobStatus.AWAITING_INPUT)
+                    self._runtime_mgr.set_runtime_state(room_id, RuntimeState.AWAITING_INPUT)
                 await asyncio.sleep(0.25)
                 continue
+
+            self._awaiting_input_signatures.pop(job_id, None)
+            self._resumed_input_signatures.pop(job_id, None)
             self._runtime_mgr.touch_activity(room_id)
             return result
 
@@ -473,6 +482,9 @@ class ExecutionOrchestrator:
             raise ValueError(f"Notebook {job.notebook_id} has no live runtime")
 
         await self._stack.send_input(room.kernel_id, value)
+        awaiting_signature = self._awaiting_input_signatures.get(job.job_id)
+        if awaiting_signature is not None:
+            self._resumed_input_signatures[job.job_id] = awaiting_signature
         await self._ledger.create_job(
             notebook_id=job.notebook_id,
             actor_id=actor_id,
@@ -550,6 +562,10 @@ def _cell_source(cell: dict[str, Any]) -> str:
     if isinstance(source, list):
         return "".join(source)
     return str(source)
+
+
+def _input_request_signature(input_request: Any) -> str:
+    return json.dumps(input_request, sort_keys=True, default=str)
 
 
 def _validate_position(*, before: str | None, after: str | None) -> None:

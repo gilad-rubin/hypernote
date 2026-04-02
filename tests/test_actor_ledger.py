@@ -1,26 +1,27 @@
-"""Tests for ActorLedger — job tracking and cell attribution."""
+"""Tests for MemoryLedger job tracking and cell attribution."""
 
 import json
 
 import pytest
 
 from hypernote.actor_ledger import (
-    ActorLedger,
     ActorType,
     JobAction,
     JobStatus,
+    MemoryLedger,
+    MemoryLedgerPolicy,
 )
 
 
 @pytest.fixture
 async def ledger():
-    ledger = ActorLedger(":memory:")
+    ledger = MemoryLedger()
     await ledger.initialize()
     yield ledger
     await ledger.close()
 
 
-async def test_create_and_get_job(ledger: ActorLedger):
+async def test_create_and_get_job(ledger: MemoryLedger):
     job = await ledger.create_job(
         notebook_id="nb-1",
         actor_id="agent-1",
@@ -38,7 +39,7 @@ async def test_create_and_get_job(ledger: ActorLedger):
     assert fetched.request_uids == []
 
 
-async def test_update_job_status_lifecycle(ledger: ActorLedger):
+async def test_update_job_status_lifecycle(ledger: MemoryLedger):
     job = await ledger.create_job(
         notebook_id="nb-1",
         actor_id="user-gilad",
@@ -59,7 +60,7 @@ async def test_update_job_status_lifecycle(ledger: ActorLedger):
     assert done.completed_at is not None
 
 
-async def test_append_request_uid(ledger: ActorLedger):
+async def test_append_request_uid(ledger: MemoryLedger):
     job = await ledger.create_job(
         notebook_id="nb-1",
         actor_id="agent-1",
@@ -74,7 +75,7 @@ async def test_append_request_uid(ledger: ActorLedger):
     assert fetched.request_uids == ["uid-1", "uid-2"]
 
 
-async def test_list_jobs_filters(ledger: ActorLedger):
+async def test_list_jobs_filters(ledger: MemoryLedger):
     await ledger.create_job("nb-1", "a1", ActorType.AGENT, JobAction.EXECUTE)
     await ledger.create_job("nb-1", "a2", ActorType.AGENT, JobAction.EXECUTE)
     await ledger.create_job("nb-2", "a1", ActorType.AGENT, JobAction.EXECUTE)
@@ -86,7 +87,7 @@ async def test_list_jobs_filters(ledger: ActorLedger):
     assert len(all_jobs) == 3
 
 
-async def test_list_active_jobs(ledger: ActorLedger):
+async def test_list_active_jobs(ledger: MemoryLedger):
     j1 = await ledger.create_job("nb-1", "a1", ActorType.AGENT, JobAction.EXECUTE)
     j2 = await ledger.create_job("nb-1", "a2", ActorType.AGENT, JobAction.EXECUTE)
     await ledger.update_job_status(j1.job_id, JobStatus.SUCCEEDED)
@@ -96,7 +97,7 @@ async def test_list_active_jobs(ledger: ActorLedger):
     assert active[0].job_id == j2.job_id
 
 
-async def test_cell_attribution(ledger: ActorLedger):
+async def test_cell_attribution(ledger: MemoryLedger):
     await ledger.update_cell_attribution(
         "nb-1", "cell-0",
         editor_id="agent-1", editor_type=ActorType.AGENT,
@@ -115,7 +116,7 @@ async def test_cell_attribution(ledger: ActorLedger):
     assert attr.last_executor_id == "user-gilad"
 
 
-async def test_list_cell_attributions(ledger: ActorLedger):
+async def test_list_cell_attributions(ledger: MemoryLedger):
     await ledger.update_cell_attribution("nb-1", "c0", editor_id="a1", editor_type=ActorType.AGENT)
     await ledger.update_cell_attribution("nb-1", "c1", editor_id="a2", editor_type=ActorType.AGENT)
 
@@ -123,9 +124,41 @@ async def test_list_cell_attributions(ledger: ActorLedger):
     assert len(attrs) == 2
 
 
-async def test_get_nonexistent_job(ledger: ActorLedger):
+async def test_get_nonexistent_job(ledger: MemoryLedger):
     assert await ledger.get_job("nonexistent") is None
 
 
-async def test_get_nonexistent_attribution(ledger: ActorLedger):
+async def test_get_nonexistent_attribution(ledger: MemoryLedger):
     assert await ledger.get_cell_attribution("nb-x", "cell-x") is None
+
+
+async def test_prunes_completed_job_history_per_notebook():
+    ledger = MemoryLedger(MemoryLedgerPolicy(max_completed_jobs_per_notebook=1))
+    await ledger.initialize()
+
+    first = await ledger.create_job("nb-1", "a1", ActorType.AGENT, JobAction.EXECUTE)
+    second = await ledger.create_job("nb-1", "a2", ActorType.AGENT, JobAction.EXECUTE)
+    await ledger.update_job_status(first.job_id, JobStatus.SUCCEEDED)
+    await ledger.update_job_status(second.job_id, JobStatus.SUCCEEDED)
+
+    jobs = await ledger.list_jobs(notebook_id="nb-1")
+    assert [job.job_id for job in jobs] == [second.job_id]
+    assert await ledger.get_job(first.job_id) is None
+
+    await ledger.close()
+
+
+async def test_evict_notebook_clears_jobs_and_attribution(ledger: MemoryLedger):
+    job = await ledger.create_job("nb-1", "a1", ActorType.AGENT, JobAction.EXECUTE)
+    await ledger.update_cell_attribution(
+        "nb-1",
+        "cell-1",
+        editor_id="a1",
+        editor_type=ActorType.AGENT,
+    )
+
+    await ledger.evict_notebook("nb-1")
+
+    assert await ledger.get_job(job.job_id) is None
+    assert await ledger.list_jobs(notebook_id="nb-1") == []
+    assert await ledger.get_cell_attribution("nb-1", "cell-1") is None

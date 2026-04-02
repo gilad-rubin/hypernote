@@ -468,3 +468,63 @@ def test_status_and_diff_surface_observation_model(runner, fake_notebooks, monke
     assert diff_result.exit_code == 0
     assert json.loads(status_result.output)["command"] == "status"
     assert json.loads(diff_result.output)["command"] == "diff"
+
+
+def test_job_get_and_stdin_use_sdk_control(runner, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+
+    class FakeControl:
+        def get_job_payload(self, job_id: str) -> dict:
+            return {"job_id": job_id, "status": "running"}
+
+        def send_job_stdin(self, job_id: str, value: str) -> dict:
+            return {"job_id": job_id, "sent": True, "value": value}
+
+    monkeypatch.setattr(cli_main, "_sdk_control", lambda ctx: FakeControl())
+
+    get_result = runner.invoke(cli, ["job", "get", "job-1"])
+    stdin_result = runner.invoke(cli, ["job", "stdin", "job-1", "--value", "gilad"])
+
+    assert get_result.exit_code == 0
+    assert stdin_result.exit_code == 0
+    assert json.loads(get_result.output)["job_id"] == "job-1"
+    assert json.loads(stdin_result.output)["sent"] is True
+
+
+def test_job_await_uses_sdk_control_lookup(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    nb.cells.insert_code("print(1)", id="code-1")
+    job = nb._create_job(("code-1",))
+    job.status = JobStatus.SUCCEEDED
+
+    class FakeControl:
+        def get_job(self, job_id: str) -> FakeJob:
+            assert job_id == "job-1"
+            return job
+
+    monkeypatch.setattr(cli_main, "_sdk_control", lambda ctx: FakeControl())
+
+    result = runner.invoke(cli, ["job", "await", "job-1"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "job.await"
+    assert payload["job"]["status"] == "succeeded"
+
+
+def test_setup_doctor_uses_sdk_control(runner, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+
+    class FakeControl:
+        def list_jobs(self) -> dict:
+            return {"jobs": []}
+
+    monkeypatch.setattr(cli_main, "_sdk_control", lambda ctx: FakeControl())
+
+    result = runner.invoke(cli, ["setup", "doctor"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["hypernote_api"] == "ok"
+    assert payload["jobs_endpoint"] is True

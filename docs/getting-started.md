@@ -36,3 +36,9 @@ Hypernote uses one logical notebook truth. A notebook may be:
 - opened mid-execution
 
 The notebook state, execution state, and outputs should still agree.
+
+## Lifecycle expectation
+
+- notebook contents and outputs persist in the `.ipynb` because Jupyter owns the document
+- runtime state, jobs, and cell attribution are ephemeral Hypernote control-plane state
+- stopping a runtime or restarting the server clears that control-plane state

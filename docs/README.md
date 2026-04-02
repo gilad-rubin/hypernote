@@ -2,6 +2,8 @@
 
 Hypernote is a notebook-first execution layer on top of Jupyter shared documents.
 
+Jupyter owns durable notebook contents and outputs. Hypernote owns an ephemeral control plane for runtimes, jobs, and attribution.
+
 Start here:
 
 - [Getting Started](/Users/giladrubin/python_workspace/hypernote/docs/getting-started.md)

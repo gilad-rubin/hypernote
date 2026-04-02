@@ -30,6 +30,7 @@ from hypernote import (
     RuntimeUnavailableError,
     connect,
 )
+from hypernote.sdk import _Config, _control_plane
 
 TERMINAL_STATUSES = {
     JobStatus.SUCCEEDED,
@@ -102,52 +103,17 @@ def _sdk_notebook(ctx: click.Context, path: str, *, create: bool = False) -> Not
     )
 
 
-def _api_client(ctx: click.Context) -> httpx.Client:
+def _sdk_control(ctx: click.Context):
     cfg = _ctx_config(ctx)
-    headers = {
-        "X-Hypernote-Actor-Id": cfg.actor_id,
-        "X-Hypernote-Actor-Type": cfg.actor_type,
-    }
-    if cfg.token:
-        headers["Authorization"] = f"token {cfg.token}"
-    return httpx.Client(
-        base_url=f"{cfg.server}/hypernote/api",
-        headers=headers,
-        timeout=cfg.timeout,
+    return _control_plane(
+        _Config(
+            server=cfg.server,
+            token=cfg.token,
+            actor_id=cfg.actor_id,
+            actor_type=cfg.actor_type,
+            timeout=cfg.timeout,
+        )
     )
-
-
-def _job_payload(ctx: click.Context, job_id: str) -> dict[str, Any]:
-    with _api_client(ctx) as client:
-        response = client.get(f"/jobs/{job_id}")
-        response.raise_for_status()
-        return response.json()
-
-
-def _list_jobs(
-    ctx: click.Context,
-    *,
-    notebook_id: str | None = None,
-    status: str | None = None,
-) -> dict[str, Any]:
-    params: dict[str, Any] = {}
-    if notebook_id:
-        params["notebook_id"] = notebook_id
-    if status:
-        params["status"] = status
-    with _api_client(ctx) as client:
-        response = client.get("/jobs", params=params)
-        response.raise_for_status()
-        return response.json()
-
-
-def _send_job_stdin(ctx: click.Context, job_id: str, value: str) -> dict[str, Any]:
-    with _api_client(ctx) as client:
-        response = client.post(f"/jobs/{job_id}/stdin", json={"value": value})
-        if response.status_code == 400:
-            raise InputNotExpectedError(response.text or "stdin not expected")
-        response.raise_for_status()
-        return response.json()
 
 
 def _final_output_mode(*, json_flag: bool, human_flag: bool) -> str:
@@ -1304,7 +1270,7 @@ def job_group() -> None:
 @click.pass_context
 @_cli_errors
 def job_get_cmd(ctx: click.Context, job_id: str, pretty: bool) -> None:
-    _echo_json(_job_payload(ctx, job_id), pretty=pretty or _stdout_is_tty())
+    _echo_json(_sdk_control(ctx).get_job_payload(job_id), pretty=pretty or _stdout_is_tty())
 
 
 @job_group.command("await")
@@ -1329,21 +1295,12 @@ def job_await_cmd(
     stream_json: bool,
     progress: str | None,
 ) -> None:
-    payload = _job_payload(ctx, job_id)
-    notebook = _sdk_notebook(ctx, payload["notebook_id"])
-    target_cells = tuple(json.loads(payload.get("target_cells") or "[]"))
-    job = Job(
-        notebook=notebook,
-        id=payload["job_id"],
-        status=JobStatus(payload["status"]),
-        cell_ids=target_cells,
-        notebook_path=payload["notebook_id"],
-    )
+    job = _sdk_control(ctx).get_job(job_id)
     _run_command_output(
-        notebook=notebook,
+        notebook=job.notebook,
         job=job,
         command="job.await",
-        path=payload["notebook_id"],
+        path=job.notebook_path,
         inserted_cells=[],
         json_flag=json_flag,
         pretty=pretty,
@@ -1362,7 +1319,7 @@ def job_await_cmd(
 @click.pass_context
 @_cli_errors
 def job_stdin_cmd(ctx: click.Context, job_id: str, value: str, pretty: bool) -> None:
-    _echo_json(_send_job_stdin(ctx, job_id, value), pretty=pretty or _stdout_is_tty())
+    _echo_json(_sdk_control(ctx).send_job_stdin(job_id, value), pretty=pretty or _stdout_is_tty())
 
 
 @cli.group("setup")
@@ -1377,7 +1334,7 @@ def setup_doctor_cmd(ctx: click.Context) -> None:
     cfg = _ctx_config(ctx)
     report: dict[str, object] = {"server": cfg.server, "hypernote_api": "unreachable"}
     try:
-        _list_jobs(ctx)
+        _sdk_control(ctx).list_jobs()
         report["hypernote_api"] = "ok"
         report["jobs_endpoint"] = True
     except Exception as exc:  # pragma: no cover - exercised via CLI output

@@ -280,7 +280,6 @@ class JobHandler(BaseHypernoteHandler):
                 "started_at": job.started_at,
                 "completed_at": job.completed_at,
                 "runtime_id": job.runtime_id,
-                "reconnect_ref": job.reconnect_ref,
             }
         )
 

@@ -19,10 +19,9 @@
 - [hypernote/actor_ledger.py](/Users/giladrubin/python_workspace/hypernote/hypernote/actor_ledger.py)
   - actor attribution
 
-## Frontend
+## Release automation
 
-- [jupyterlab_hypernote/src/client.ts](/Users/giladrubin/python_workspace/hypernote/jupyterlab_hypernote/src/client.ts)
-- [jupyterlab_hypernote/src/status_widget.ts](/Users/giladrubin/python_workspace/hypernote/jupyterlab_hypernote/src/status_widget.ts)
-- [jupyterlab_hypernote/src/index.ts](/Users/giladrubin/python_workspace/hypernote/jupyterlab_hypernote/src/index.ts)
+- [.github/workflows/release.yml](/Users/giladrubin/python_workspace/hypernote/.github/workflows/release.yml)
+  - tag-driven build, GitHub release, and PyPI publish workflow for the `hypernote` package
 
-These files are the JupyterLab-side integration surface, not the source of notebook truth.
+There is no separate JupyterLab-side package that owns notebook semantics. JupyterLab is treated as an external notebook surface attached to the same shared-document and execution path.

@@ -1,51 +1,19 @@
-"""ActorLedger: SQLite persistence for job and cell attribution metadata.
+"""Ephemeral ledger for job tracking and cell attribution metadata.
 
-Stores only metadata about who did what and when.
-Never stores notebook content or output copies.
+Hypernote treats runtimes as server-owned but notebook-scoped and ephemeral.
+This ledger mirrors that model: it keeps recent job state and attribution in
+memory, and callers can evict a notebook's state when its runtime is stopped.
 """
 
 from __future__ import annotations
 
-import json
+import asyncio
 import time
 import uuid
+from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
-
-import aiosqlite
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS jobs (
-    job_id        TEXT PRIMARY KEY,
-    notebook_id   TEXT NOT NULL,
-    runtime_id    TEXT,
-    actor_id      TEXT NOT NULL,
-    actor_type    TEXT NOT NULL,
-    action        TEXT NOT NULL,
-    target_cells  TEXT,
-    request_uids  TEXT NOT NULL DEFAULT '[]',
-    status        TEXT NOT NULL,
-    created_at    REAL NOT NULL,
-    started_at    REAL,
-    completed_at  REAL,
-    reconnect_ref TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_jobs_notebook ON jobs(notebook_id);
-CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
-
-CREATE TABLE IF NOT EXISTS cell_attribution (
-    notebook_id        TEXT NOT NULL,
-    cell_id            TEXT NOT NULL,
-    last_editor_id     TEXT,
-    last_editor_type   TEXT,
-    last_executor_id   TEXT,
-    last_executor_type TEXT,
-    updated_at         REAL NOT NULL,
-    PRIMARY KEY (notebook_id, cell_id)
-);
-"""
+from typing import Protocol
 
 
 class JobStatus(str, Enum):
@@ -78,11 +46,10 @@ class Job:
     status: JobStatus
     created_at: float
     runtime_id: str | None = None
-    target_cells: str | None = None  # JSON array of cell_ids
+    target_cells: str | None = None
     request_uids: list[str] = field(default_factory=list)
     started_at: float | None = None
     completed_at: float | None = None
-    reconnect_ref: str | None = None
 
 
 @dataclass
@@ -96,42 +63,89 @@ class CellAttribution:
     last_executor_type: str | None = None
 
 
-class ActorLedger:
-    """Tiny persistent store for job tracking and cell attribution.
+class Ledger(Protocol):
+    async def initialize(self) -> None: ...
 
-    SQLite-backed. No notebook content — only who did what and when.
+    async def close(self) -> None: ...
+
+    async def create_job(
+        self,
+        notebook_id: str,
+        actor_id: str,
+        actor_type: ActorType,
+        action: JobAction,
+        target_cells: str | None = None,
+        runtime_id: str | None = None,
+    ) -> Job: ...
+
+    async def update_job_status(
+        self,
+        job_id: str,
+        status: JobStatus,
+        runtime_id: str | None = None,
+    ) -> None: ...
+
+    async def append_request_uid(self, job_id: str, request_uid: str) -> None: ...
+
+    async def get_job(self, job_id: str) -> Job | None: ...
+
+    async def list_jobs(
+        self,
+        notebook_id: str | None = None,
+        status: JobStatus | None = None,
+        limit: int = 100,
+    ) -> list[Job]: ...
+
+    async def list_active_jobs(self, notebook_id: str) -> list[Job]: ...
+
+    async def update_cell_attribution(
+        self,
+        notebook_id: str,
+        cell_id: str,
+        editor_id: str | None = None,
+        editor_type: ActorType | None = None,
+        executor_id: str | None = None,
+        executor_type: ActorType | None = None,
+    ) -> None: ...
+
+    async def get_cell_attribution(
+        self,
+        notebook_id: str,
+        cell_id: str,
+    ) -> CellAttribution | None: ...
+
+    async def list_cell_attributions(self, notebook_id: str) -> list[CellAttribution]: ...
+
+    async def evict_notebook(self, notebook_id: str) -> None: ...
+
+
+@dataclass(frozen=True)
+class MemoryLedgerPolicy:
+    max_completed_jobs_per_notebook: int = 20
+
+
+class MemoryLedger:
+    """In-memory notebook-scoped ledger.
+
+    Jobs remain queryable while a notebook runtime is alive and retain a small
+    bounded recent history. Notebook eviction clears both jobs and attribution.
     """
 
-    def __init__(self, db_path: str | Path = ":memory:"):
-        self._db_path = str(db_path)
-        self._db: aiosqlite.Connection | None = None
+    def __init__(self, policy: MemoryLedgerPolicy | None = None):
+        self._policy = policy or MemoryLedgerPolicy()
+        self._lock = asyncio.Lock()
+        self._jobs_by_id: dict[str, Job] = {}
+        self._job_ids_by_notebook: dict[str, list[str]] = defaultdict(list)
+        self._cell_attribution: dict[tuple[str, str], CellAttribution] = {}
 
     async def initialize(self) -> None:
-        self._db = await aiosqlite.connect(self._db_path)
-        self._db.row_factory = aiosqlite.Row
-        await self._db.executescript(SCHEMA)
-        await self._ensure_column("jobs", "request_uids", "TEXT NOT NULL DEFAULT '[]'")
-        await self._db.commit()
+        return None
 
     async def close(self) -> None:
-        if self._db:
-            await self._db.close()
-            self._db = None
-
-    @property
-    def db(self) -> aiosqlite.Connection:
-        if self._db is None:
-            raise RuntimeError("ActorLedger not initialized — call initialize() first")
-        return self._db
-
-    async def _ensure_column(self, table: str, column: str, definition: str) -> None:
-        cursor = await self.db.execute(f"PRAGMA table_info({table})")
-        rows = await cursor.fetchall()
-        existing = {row["name"] for row in rows}
-        if column not in existing:
-            await self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-
-    # --- Jobs ---
+        async with self._lock:
+            self._jobs_by_id.clear()
+            self._job_ids_by_notebook.clear()
+            self._cell_attribution.clear()
 
     async def create_job(
         self,
@@ -142,92 +156,61 @@ class ActorLedger:
         target_cells: str | None = None,
         runtime_id: str | None = None,
     ) -> Job:
-        job = Job(
-            job_id=uuid.uuid4().hex[:12],
-            notebook_id=notebook_id,
-            actor_id=actor_id,
-            actor_type=actor_type,
-            action=action,
-            status=JobStatus.QUEUED,
-            created_at=time.time(),
-            runtime_id=runtime_id,
-            target_cells=target_cells,
-            request_uids=[],
-        )
-        await self.db.execute(
-            """INSERT INTO jobs
-               (job_id, notebook_id, runtime_id, actor_id, actor_type,
-                action, target_cells, request_uids, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                job.job_id,
-                job.notebook_id,
-                job.runtime_id,
-                job.actor_id,
-                job.actor_type.value,
-                job.action.value,
-                job.target_cells,
-                json.dumps(job.request_uids),
-                job.status.value,
-                job.created_at,
-            ),
-        )
-        await self.db.commit()
-        return job
+        async with self._lock:
+            job = Job(
+                job_id=uuid.uuid4().hex[:12],
+                notebook_id=notebook_id,
+                actor_id=actor_id,
+                actor_type=actor_type,
+                action=action,
+                status=JobStatus.QUEUED,
+                created_at=time.time(),
+                runtime_id=runtime_id,
+                target_cells=target_cells,
+                request_uids=[],
+            )
+            self._jobs_by_id[job.job_id] = job
+            self._job_ids_by_notebook[notebook_id].append(job.job_id)
+            self._prune_completed_jobs_locked(notebook_id)
+            return _copy_job(job)
 
     async def update_job_status(
         self,
         job_id: str,
         status: JobStatus,
         runtime_id: str | None = None,
-        reconnect_ref: str | None = None,
     ) -> None:
-        now = time.time()
-        started = now if status == JobStatus.RUNNING else None
-        completed = (
-            now
-            if status in (JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.INTERRUPTED)
-            else None
-        )
+        async with self._lock:
+            job = self._jobs_by_id.get(job_id)
+            if job is None:
+                return
 
-        sets = ["status = ?"]
-        params: list = [status.value]
+            now = time.time()
+            job.status = status
+            if status == JobStatus.RUNNING and job.started_at is None:
+                job.started_at = now
+            if status in {
+                JobStatus.SUCCEEDED,
+                JobStatus.FAILED,
+                JobStatus.INTERRUPTED,
+            }:
+                job.completed_at = now
+            if runtime_id is not None:
+                job.runtime_id = runtime_id
 
-        if started:
-            sets.append("started_at = ?")
-            params.append(started)
-        if completed:
-            sets.append("completed_at = ?")
-            params.append(completed)
-        if runtime_id is not None:
-            sets.append("runtime_id = ?")
-            params.append(runtime_id)
-        if reconnect_ref is not None:
-            sets.append("reconnect_ref = ?")
-            params.append(reconnect_ref)
-
-        params.append(job_id)
-        await self.db.execute(f"UPDATE jobs SET {', '.join(sets)} WHERE job_id = ?", params)
-        await self.db.commit()
+            self._prune_completed_jobs_locked(job.notebook_id)
 
     async def append_request_uid(self, job_id: str, request_uid: str) -> None:
-        job = await self.get_job(job_id)
-        if job is None:
-            raise ValueError(f"Job {job_id} not found")
-        request_uids = list(job.request_uids)
-        request_uids.append(request_uid)
-        await self.db.execute(
-            "UPDATE jobs SET request_uids = ? WHERE job_id = ?",
-            (json.dumps(request_uids), job_id),
-        )
-        await self.db.commit()
+        async with self._lock:
+            job = self._jobs_by_id.get(job_id)
+            if job is None:
+                raise ValueError(f"Job {job_id} not found")
+            job.request_uids.append(request_uid)
 
     async def get_job(self, job_id: str) -> Job | None:
-        cursor = await self.db.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
-        row = await cursor.fetchone()
-        if row is None:
-            return None
-        return _row_to_job(row)
+        async with self._lock:
+            job = self._jobs_by_id.get(job_id)
+            return None if job is None else _copy_job(job)
 
     async def list_jobs(
         self,
@@ -235,41 +218,23 @@ class ActorLedger:
         status: JobStatus | None = None,
         limit: int = 100,
     ) -> list[Job]:
-        where_clauses = []
-        params: list = []
-        if notebook_id:
-            where_clauses.append("notebook_id = ?")
-            params.append(notebook_id)
-        if status:
-            where_clauses.append("status = ?")
-            params.append(status.value)
-
-        where = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        params.append(limit)
-        cursor = await self.db.execute(
-            f"SELECT * FROM jobs {where} ORDER BY created_at DESC LIMIT ?", params
-        )
-        rows = await cursor.fetchall()
-        return [_row_to_job(r) for r in rows]
+        async with self._lock:
+            jobs = self._iter_jobs_locked(notebook_id=notebook_id, status=status)
+            return [_copy_job(job) for job in jobs[:limit]]
 
     async def list_active_jobs(self, notebook_id: str) -> list[Job]:
-        cursor = await self.db.execute(
-            (
-                "SELECT * FROM jobs "
-                "WHERE notebook_id = ? AND status IN (?, ?, ?) "
-                "ORDER BY created_at"
-            ),
-            (
-                notebook_id,
-                JobStatus.QUEUED.value,
-                JobStatus.RUNNING.value,
-                JobStatus.AWAITING_INPUT.value,
-            ),
-        )
-        rows = await cursor.fetchall()
-        return [_row_to_job(r) for r in rows]
-
-    # --- Cell attribution ---
+        async with self._lock:
+            jobs = self._iter_jobs_locked(notebook_id=notebook_id)
+            active = [
+                job
+                for job in jobs
+                if job.status in {
+                    JobStatus.QUEUED,
+                    JobStatus.RUNNING,
+                    JobStatus.AWAITING_INPUT,
+                }
+            ]
+            return [_copy_job(job) for job in active]
 
     async def update_cell_attribution(
         self,
@@ -280,88 +245,127 @@ class ActorLedger:
         executor_id: str | None = None,
         executor_type: ActorType | None = None,
     ) -> None:
-        now = time.time()
-        await self.db.execute(
-            """INSERT INTO cell_attribution
-               (notebook_id, cell_id, last_editor_id, last_editor_type,
-                last_executor_id, last_executor_type, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(notebook_id, cell_id) DO UPDATE SET
-                 last_editor_id = COALESCE(
-                   excluded.last_editor_id,
-                   cell_attribution.last_editor_id
-                 ),
-                 last_editor_type = COALESCE(
-                   excluded.last_editor_type,
-                   cell_attribution.last_editor_type
-                 ),
-                 last_executor_id = COALESCE(
-                   excluded.last_executor_id,
-                   cell_attribution.last_executor_id
-                 ),
-                 last_executor_type = COALESCE(
-                   excluded.last_executor_type,
-                   cell_attribution.last_executor_type
-                 ),
-                 updated_at = excluded.updated_at""",
-            (
-                notebook_id,
-                cell_id,
-                editor_id,
-                editor_type.value if editor_type else None,
-                executor_id,
-                executor_type.value if executor_type else None,
-                now,
-            ),
-        )
-        await self.db.commit()
+        async with self._lock:
+            key = (notebook_id, cell_id)
+            existing = self._cell_attribution.get(key)
+            now = time.time()
+            if existing is None:
+                existing = CellAttribution(
+                    notebook_id=notebook_id,
+                    cell_id=cell_id,
+                    updated_at=now,
+                )
+                self._cell_attribution[key] = existing
+
+            if editor_id is not None:
+                existing.last_editor_id = editor_id
+                existing.last_editor_type = editor_type.value if editor_type else None
+            if executor_id is not None:
+                existing.last_executor_id = executor_id
+                existing.last_executor_type = executor_type.value if executor_type else None
+            existing.updated_at = now
 
     async def get_cell_attribution(
-        self, notebook_id: str, cell_id: str
+        self,
+        notebook_id: str,
+        cell_id: str,
     ) -> CellAttribution | None:
-        cursor = await self.db.execute(
-            "SELECT * FROM cell_attribution WHERE notebook_id = ? AND cell_id = ?",
-            (notebook_id, cell_id),
-        )
-        row = await cursor.fetchone()
-        if row is None:
-            return None
-        return _row_to_attribution(row)
+        async with self._lock:
+            attr = self._cell_attribution.get((notebook_id, cell_id))
+            return None if attr is None else _copy_attribution(attr)
 
     async def list_cell_attributions(self, notebook_id: str) -> list[CellAttribution]:
-        cursor = await self.db.execute(
-            "SELECT * FROM cell_attribution WHERE notebook_id = ? ORDER BY updated_at DESC",
-            (notebook_id,),
-        )
-        rows = await cursor.fetchall()
-        return [_row_to_attribution(r) for r in rows]
+        async with self._lock:
+            attrs = [
+                attr
+                for attr in self._cell_attribution.values()
+                if attr.notebook_id == notebook_id
+            ]
+            attrs.sort(key=lambda attr: attr.updated_at, reverse=True)
+            return [_copy_attribution(attr) for attr in attrs]
+
+    async def evict_notebook(self, notebook_id: str) -> None:
+        async with self._lock:
+            for job_id in self._job_ids_by_notebook.pop(notebook_id, []):
+                self._jobs_by_id.pop(job_id, None)
+
+            stale_keys = [
+                key for key in self._cell_attribution if key[0] == notebook_id
+            ]
+            for key in stale_keys:
+                self._cell_attribution.pop(key, None)
+
+    def _iter_jobs_locked(
+        self,
+        *,
+        notebook_id: str | None = None,
+        status: JobStatus | None = None,
+    ) -> list[Job]:
+        if notebook_id is None:
+            jobs = list(self._jobs_by_id.values())
+        else:
+            jobs = [
+                self._jobs_by_id[job_id]
+                for job_id in self._job_ids_by_notebook.get(notebook_id, [])
+                if job_id in self._jobs_by_id
+            ]
+
+        if status is not None:
+            jobs = [job for job in jobs if job.status == status]
+
+        jobs.sort(key=lambda job: job.created_at, reverse=True)
+        return jobs
+
+    def _prune_completed_jobs_locked(self, notebook_id: str) -> None:
+        max_completed = self._policy.max_completed_jobs_per_notebook
+        if max_completed < 0:
+            return
+
+        completed_ids = [
+            job_id
+            for job_id in self._job_ids_by_notebook.get(notebook_id, [])
+            if self._jobs_by_id.get(job_id) is not None
+            and self._jobs_by_id[job_id].status
+            in {JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.INTERRUPTED}
+        ]
+        overflow = len(completed_ids) - max_completed
+        if overflow <= 0:
+            return
+
+        stale_ids = set(completed_ids[:overflow])
+        self._job_ids_by_notebook[notebook_id] = [
+            job_id
+            for job_id in self._job_ids_by_notebook.get(notebook_id, [])
+            if job_id not in stale_ids
+        ]
+        for job_id in stale_ids:
+            self._jobs_by_id.pop(job_id, None)
 
 
-def _row_to_job(row: aiosqlite.Row) -> Job:
+def _copy_job(job: Job) -> Job:
     return Job(
-        job_id=row["job_id"],
-        notebook_id=row["notebook_id"],
-        runtime_id=row["runtime_id"],
-        actor_id=row["actor_id"],
-        actor_type=ActorType(row["actor_type"]),
-        action=JobAction(row["action"]),
-        status=JobStatus(row["status"]),
-        created_at=row["created_at"],
-        target_cells=row["target_cells"],
-        request_uids=json.loads(row["request_uids"] or "[]"),
-        started_at=row["started_at"],
-        completed_at=row["completed_at"],
-        reconnect_ref=row["reconnect_ref"],
+        job_id=job.job_id,
+        notebook_id=job.notebook_id,
+        runtime_id=job.runtime_id,
+        actor_id=job.actor_id,
+        actor_type=job.actor_type,
+        action=job.action,
+        status=job.status,
+        created_at=job.created_at,
+        target_cells=job.target_cells,
+        request_uids=list(job.request_uids),
+        started_at=job.started_at,
+        completed_at=job.completed_at,
     )
 
 
-def _row_to_attribution(row: aiosqlite.Row) -> CellAttribution:
+def _copy_attribution(attr: CellAttribution) -> CellAttribution:
     return CellAttribution(
-        notebook_id=row["notebook_id"],
-        cell_id=row["cell_id"],
-        last_editor_id=row["last_editor_id"],
-        last_editor_type=row["last_editor_type"],
-        last_executor_id=row["last_executor_id"],
-        last_executor_type=row["last_executor_type"],
-        updated_at=row["updated_at"],
+        notebook_id=attr.notebook_id,
+        cell_id=attr.cell_id,
+        last_editor_id=attr.last_editor_id,
+        last_editor_type=attr.last_editor_type,
+        last_executor_id=attr.last_executor_id,
+        last_executor_type=attr.last_executor_type,
+        updated_at=attr.updated_at,
     )

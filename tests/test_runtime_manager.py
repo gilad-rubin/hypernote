@@ -134,28 +134,10 @@ async def test_gc_stops_idle_detached(manager: RuntimeManager):
     assert room.state == RuntimeState.STOPPED
 
 
-async def test_gc_skips_pinned(manager: RuntimeManager):
-    room = await manager.ensure_room("nb-1.ipynb")
-    manager.pin_runtime(room.room_id)
-    room.last_activity -= 20
-    stopped = await manager.gc_sweep()
-    assert stopped == []
-    assert room.state == RuntimeState.LIVE_DETACHED
-
-
 async def test_get_runtime_status_for_missing_notebook(manager: RuntimeManager):
     status = await manager.get_runtime_status("missing.ipynb")
     assert status["state"] == RuntimeState.STOPPED.value
     assert status["room_id"] is None
-
-
-async def test_recover_room(manager: RuntimeManager):
-    room = await manager.open_runtime("nb-1.ipynb", "client-a")
-    await manager.detach_client(room.room_id, "client-a")
-    recovered = await manager.recover_room("nb-1.ipynb", "client-b")
-    assert recovered.room_id == room.room_id
-    assert recovered.state == RuntimeState.LIVE_ATTACHED
-    assert "client-b" in recovered.attached_clients
 
 
 async def test_mark_job_started_and_finished(manager: RuntimeManager):
@@ -164,3 +146,22 @@ async def test_mark_job_started_and_finished(manager: RuntimeManager):
     assert room.active_jobs == {"job-1"}
     manager.mark_job_finished("nb-1.ipynb", "job-1")
     assert room.active_jobs == set()
+
+
+async def test_stop_runtime_evicts_notebook_via_callback(
+    session_manager: MockSessionManager,
+    kernel_manager: MockKernelManager,
+):
+    evicted: list[str] = []
+    manager = RuntimeManager(
+        session_manager,
+        kernel_manager,
+        RuntimePolicy(idle_ttl_seconds=10),
+        on_notebook_stopped=evicted.append,
+    )
+
+    room = await manager.open_runtime("nb-1.ipynb", "client-a")
+    await manager.stop_runtime(room.room_id)
+
+    assert evicted == ["nb-1.ipynb"]
+    assert manager.get_room_for_notebook("nb-1.ipynb") is None

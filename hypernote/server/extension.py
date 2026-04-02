@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import os
-
 from jupyter_server.extension.application import ExtensionApp
 
-from hypernote.actor_ledger import ActorLedger
+from hypernote.actor_ledger import MemoryLedger
 from hypernote.execution_orchestrator import ExecutionOrchestrator, SharedNotebookAccessor
 from hypernote.runtime_manager import RuntimeManager, RuntimePolicy
 from hypernote.server.handlers import (
@@ -34,8 +32,7 @@ class HypernoteExtension(ExtensionApp):
     name = "hypernote"
 
     def initialize_settings(self) -> None:
-        db_path = os.environ.get("HYPERNOTE_DB_PATH", ":memory:")
-        self._ledger = ActorLedger(db_path)
+        self._ledger = MemoryLedger()
 
     async def _ensure_initialized(self) -> None:
         if hasattr(self, "_orchestrator"):
@@ -50,6 +47,7 @@ class HypernoteExtension(ExtensionApp):
             session_manager=self.settings["session_manager"],
             kernel_manager=self.settings["kernel_manager"],
             policy=RuntimePolicy(),
+            on_notebook_stopped=self._ledger.evict_notebook,
         )
         await runtime_mgr.start_gc_loop()
 

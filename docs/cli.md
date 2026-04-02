@@ -41,6 +41,8 @@ Hypernote's CLI is agent-first:
 - `runtime stop`
 - `setup doctor`
 
+Job and runtime commands are for the live notebook session. They should be treated as ephemeral control-plane interfaces, not durable history queries.
+
 ## Output modes
 
 - default TTY: attached human-readable progress

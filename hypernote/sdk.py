@@ -193,6 +193,64 @@ class _SDKMixin:
         return response
 
 
+class _ControlPlane(_SDKMixin):
+    """Internal control-plane helper for CLI/operator commands.
+
+    This keeps low-level job and diagnostics transport logic in one place
+    without expanding the public notebook-first SDK surface.
+    """
+
+    def __init__(self, config: _Config):
+        self._config = config
+
+    def get_job_payload(self, job_id: str) -> dict[str, Any]:
+        response = self._request(
+            "GET",
+            f"/hypernote/api/jobs/{job_id}",
+            hypernote=True,
+        )
+        _raise_response(response)
+        return response.json()
+
+    def get_job(self, job_id: str) -> Job:
+        return _job_from_payload(self._config, self.get_job_payload(job_id))
+
+    def list_jobs(
+        self,
+        *,
+        notebook_id: str | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if notebook_id:
+            params["notebook_id"] = notebook_id
+        if status:
+            params["status"] = status
+        response = self._request(
+            "GET",
+            "/hypernote/api/jobs",
+            hypernote=True,
+            params=params or None,
+        )
+        _raise_response(response)
+        return response.json()
+
+    def send_job_stdin(self, job_id: str, value: str) -> dict[str, Any]:
+        response = self._request(
+            "POST",
+            f"/hypernote/api/jobs/{job_id}/stdin",
+            hypernote=True,
+            json_body={"value": value},
+        )
+        try:
+            _raise_response(response)
+        except HypernoteError as exc:
+            if response.status_code == 400:
+                raise InputNotExpectedError(str(exc)) from exc
+            raise
+        return response.json()
+
+
 class Notebook(_SDKMixin):
     """Main user-facing notebook handle."""
 
@@ -719,6 +777,25 @@ def _new_notebook_model() -> dict[str, Any]:
 
 def _generated_cell_id() -> str:
     return hashlib.sha1(f"{time.time_ns()}".encode()).hexdigest()[:12]
+
+
+def _control_plane(config: _Config) -> _ControlPlane:
+    return _ControlPlane(config)
+
+
+def _job_from_payload(config: _Config, payload: dict[str, Any]) -> Job:
+    target_cells: tuple[str, ...] = ()
+    if payload.get("target_cells"):
+        target_cells = tuple(json.loads(payload["target_cells"]))
+    notebook_path = payload["notebook_id"]
+    notebook = Notebook(path=notebook_path, _config=config)
+    return Job(
+        notebook=notebook,
+        id=payload["job_id"],
+        status=JobStatus(payload["status"]),
+        cell_ids=target_cells,
+        notebook_path=notebook_path,
+    )
 
 
 def _validate_position(*, before: str | None, after: str | None) -> None:

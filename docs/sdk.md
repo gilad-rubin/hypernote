@@ -52,6 +52,8 @@ nb = hypernote.connect("tmp/demo.ipynb", create=True)
 - `ensure()`
 - `stop()`
 
+`Runtime` reflects live notebook-scoped control-plane state. It is not durable across runtime stop or server restart.
+
 ### `Job`
 
 - `id`
@@ -60,6 +62,8 @@ nb = hypernote.connect("tmp/demo.ipynb", create=True)
 - `wait()`
 - `refresh()`
 - `send_stdin(...)`
+
+`Job` is a live coordination handle backed by Hypernote's in-memory ledger. It is intended for current execution flow and recent status, not long-term history.
 
 ## Observation model
 
