@@ -45,7 +45,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v6
 
-      - run: uv run python -m pytest -q
+      - run: uv run --extra dev python -m pytest -q
 
   release:
     needs: [build-package, test]
