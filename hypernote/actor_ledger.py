@@ -6,12 +6,12 @@ Never stores notebook content or output copies.
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Literal
 
 import aiosqlite
 
@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     actor_type    TEXT NOT NULL,
     action        TEXT NOT NULL,
     target_cells  TEXT,
+    request_uids  TEXT NOT NULL DEFAULT '[]',
     status        TEXT NOT NULL,
     created_at    REAL NOT NULL,
     started_at    REAL,
@@ -78,6 +79,7 @@ class Job:
     created_at: float
     runtime_id: str | None = None
     target_cells: str | None = None  # JSON array of cell_ids
+    request_uids: list[str] = field(default_factory=list)
     started_at: float | None = None
     completed_at: float | None = None
     reconnect_ref: str | None = None
@@ -108,6 +110,7 @@ class ActorLedger:
         self._db = await aiosqlite.connect(self._db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(SCHEMA)
+        await self._ensure_column("jobs", "request_uids", "TEXT NOT NULL DEFAULT '[]'")
         await self._db.commit()
 
     async def close(self) -> None:
@@ -120,6 +123,13 @@ class ActorLedger:
         if self._db is None:
             raise RuntimeError("ActorLedger not initialized — call initialize() first")
         return self._db
+
+    async def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        cursor = await self.db.execute(f"PRAGMA table_info({table})")
+        rows = await cursor.fetchall()
+        existing = {row["name"] for row in rows}
+        if column not in existing:
+            await self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     # --- Jobs ---
 
@@ -142,12 +152,13 @@ class ActorLedger:
             created_at=time.time(),
             runtime_id=runtime_id,
             target_cells=target_cells,
+            request_uids=[],
         )
         await self.db.execute(
             """INSERT INTO jobs
                (job_id, notebook_id, runtime_id, actor_id, actor_type,
-                action, target_cells, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                action, target_cells, request_uids, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 job.job_id,
                 job.notebook_id,
@@ -156,6 +167,7 @@ class ActorLedger:
                 job.actor_type.value,
                 job.action.value,
                 job.target_cells,
+                json.dumps(job.request_uids),
                 job.status.value,
                 job.created_at,
             ),
@@ -198,6 +210,18 @@ class ActorLedger:
         await self.db.execute(f"UPDATE jobs SET {', '.join(sets)} WHERE job_id = ?", params)
         await self.db.commit()
 
+    async def append_request_uid(self, job_id: str, request_uid: str) -> None:
+        job = await self.get_job(job_id)
+        if job is None:
+            raise ValueError(f"Job {job_id} not found")
+        request_uids = list(job.request_uids)
+        request_uids.append(request_uid)
+        await self.db.execute(
+            "UPDATE jobs SET request_uids = ? WHERE job_id = ?",
+            (json.dumps(request_uids), job_id),
+        )
+        await self.db.commit()
+
     async def get_job(self, job_id: str) -> Job | None:
         cursor = await self.db.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
         row = await cursor.fetchone()
@@ -230,8 +254,17 @@ class ActorLedger:
 
     async def list_active_jobs(self, notebook_id: str) -> list[Job]:
         cursor = await self.db.execute(
-            "SELECT * FROM jobs WHERE notebook_id = ? AND status IN (?, ?, ?) ORDER BY created_at",
-            (notebook_id, JobStatus.QUEUED.value, JobStatus.RUNNING.value, JobStatus.AWAITING_INPUT.value),
+            (
+                "SELECT * FROM jobs "
+                "WHERE notebook_id = ? AND status IN (?, ?, ?) "
+                "ORDER BY created_at"
+            ),
+            (
+                notebook_id,
+                JobStatus.QUEUED.value,
+                JobStatus.RUNNING.value,
+                JobStatus.AWAITING_INPUT.value,
+            ),
         )
         rows = await cursor.fetchall()
         return [_row_to_job(r) for r in rows]
@@ -254,10 +287,22 @@ class ActorLedger:
                 last_executor_id, last_executor_type, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(notebook_id, cell_id) DO UPDATE SET
-                 last_editor_id = COALESCE(excluded.last_editor_id, cell_attribution.last_editor_id),
-                 last_editor_type = COALESCE(excluded.last_editor_type, cell_attribution.last_editor_type),
-                 last_executor_id = COALESCE(excluded.last_executor_id, cell_attribution.last_executor_id),
-                 last_executor_type = COALESCE(excluded.last_executor_type, cell_attribution.last_executor_type),
+                 last_editor_id = COALESCE(
+                   excluded.last_editor_id,
+                   cell_attribution.last_editor_id
+                 ),
+                 last_editor_type = COALESCE(
+                   excluded.last_editor_type,
+                   cell_attribution.last_editor_type
+                 ),
+                 last_executor_id = COALESCE(
+                   excluded.last_executor_id,
+                   cell_attribution.last_executor_id
+                 ),
+                 last_executor_type = COALESCE(
+                   excluded.last_executor_type,
+                   cell_attribution.last_executor_type
+                 ),
                  updated_at = excluded.updated_at""",
             (
                 notebook_id,
@@ -303,6 +348,7 @@ def _row_to_job(row: aiosqlite.Row) -> Job:
         status=JobStatus(row["status"]),
         created_at=row["created_at"],
         target_cells=row["target_cells"],
+        request_uids=json.loads(row["request_uids"] or "[]"),
         started_at=row["started_at"],
         completed_at=row["completed_at"],
         reconnect_ref=row["reconnect_ref"],

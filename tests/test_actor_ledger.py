@@ -35,6 +35,7 @@ async def test_create_and_get_job(ledger: ActorLedger):
     assert fetched is not None
     assert fetched.notebook_id == "nb-1"
     assert fetched.target_cells == json.dumps(["cell-0", "cell-1"])
+    assert fetched.request_uids == []
 
 
 async def test_update_job_status_lifecycle(ledger: ActorLedger):
@@ -56,6 +57,21 @@ async def test_update_job_status_lifecycle(ledger: ActorLedger):
     done = await ledger.get_job(job.job_id)
     assert done.status == JobStatus.SUCCEEDED
     assert done.completed_at is not None
+
+
+async def test_append_request_uid(ledger: ActorLedger):
+    job = await ledger.create_job(
+        notebook_id="nb-1",
+        actor_id="agent-1",
+        actor_type=ActorType.AGENT,
+        action=JobAction.EXECUTE,
+    )
+    await ledger.append_request_uid(job.job_id, "uid-1")
+    await ledger.append_request_uid(job.job_id, "uid-2")
+
+    fetched = await ledger.get_job(job.job_id)
+    assert fetched is not None
+    assert fetched.request_uids == ["uid-1", "uid-2"]
 
 
 async def test_list_jobs_filters(ledger: ActorLedger):

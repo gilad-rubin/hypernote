@@ -1,24 +1,20 @@
-"""REST handlers for the Hypernote NotebookControlAPI.
-
-All handlers target notebook IDs, cell IDs, and runtime IDs.
-None target UI concepts like "active notebook" or "focused editor".
-"""
+"""Minimal Hypernote REST handlers."""
 
 from __future__ import annotations
 
 import json
+import urllib.parse
 from http import HTTPStatus
-from typing import Any, Callable, Awaitable
+from typing import Any, Awaitable, Callable
 
 import tornado.web
+from jupyter_server.base.handlers import APIHandler
 
 from hypernote.actor_ledger import ActorType, JobStatus
 from hypernote.execution_orchestrator import ExecutionOrchestrator
 
 
-class BaseHypernoteHandler(tornado.web.RequestHandler):
-    """Base handler with orchestrator access."""
-
+class BaseHypernoteHandler(APIHandler):
     def initialize(self, get_orchestrator: Callable[[], Awaitable[ExecutionOrchestrator]]) -> None:
         self._get_orchestrator = get_orchestrator
 
@@ -26,130 +22,35 @@ class BaseHypernoteHandler(tornado.web.RequestHandler):
         return await self._get_orchestrator()
 
     def get_actor(self) -> tuple[str, ActorType]:
-        """Extract actor identity from request headers or body."""
         actor_id = self.request.headers.get("X-Hypernote-Actor-Id", "anonymous")
         actor_type_str = self.request.headers.get("X-Hypernote-Actor-Type", "human")
-        actor_type = ActorType(actor_type_str) if actor_type_str in ("human", "agent") else ActorType.HUMAN
+        actor_type = (
+            ActorType(actor_type_str)
+            if actor_type_str in {"human", "agent"}
+            else ActorType.HUMAN
+        )
         return actor_id, actor_type
+
+    def get_json_body(self) -> dict[str, Any]:
+        try:
+            return json.loads(self.request.body) if self.request.body else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
 
     def write_json(self, data: Any, status: int = 200) -> None:
         self.set_status(status)
         self.set_header("Content-Type", "application/json")
         self.finish(json.dumps(data, default=str))
 
-    def get_json_body(self) -> dict:
-        try:
-            return json.loads(self.request.body)
-        except (json.JSONDecodeError, TypeError):
-            return {}
-
-
-# --- Notebook handlers ---
-
-
-class NotebooksHandler(BaseHypernoteHandler):
-    """POST: create notebook, GET: list (placeholder)."""
-
-    async def post(self) -> None:
-        body = self.get_json_body()
-        path = body.get("path", "untitled.ipynb")
-        orch = await self.get_orch()
-        nb_id = await orch.create_notebook(path)
-        self.write_json({"notebook_id": nb_id}, status=HTTPStatus.CREATED)
-
-    async def get(self) -> None:
-        # Listing notebooks is a Jupyter Server concern, not Hypernote's
-        self.write_json({"notebooks": []})
-
-
-class NotebookHandler(BaseHypernoteHandler):
-    """GET: open/info for a notebook."""
-
-    async def get(self, notebook_id: str) -> None:
-        orch = await self.get_orch()
-        try:
-            nb_id = await orch.open_notebook(notebook_id)
-            cells = await orch.list_cells(nb_id)
-            self.write_json({"notebook_id": nb_id, "cells": cells})
-        except Exception as e:
-            raise tornado.web.HTTPError(404, reason=str(e))
-
-
-class SaveHandler(BaseHypernoteHandler):
-    """POST: save notebook to disk."""
-
-    async def post(self, notebook_id: str) -> None:
-        orch = await self.get_orch()
-        await orch.save_notebook(notebook_id)
-        self.write_json({"saved": True})
-
-
-# --- Cell handlers ---
-
-
-class CellsHandler(BaseHypernoteHandler):
-    """GET: list cells, POST: insert cell."""
-
-    async def get(self, notebook_id: str) -> None:
-        orch = await self.get_orch()
-        cells = await orch.list_cells(notebook_id)
-        self.write_json({"cells": cells})
-
-    async def post(self, notebook_id: str) -> None:
-        body = self.get_json_body()
-        index = body.get("index", 0)
-        cell_type = body.get("cell_type", "code")
-        source = body.get("source", "")
-        actor_id, actor_type = self.get_actor()
-        orch = await self.get_orch()
-        cell_id = await orch.insert_cell(
-            notebook_id, index, cell_type, source, actor_id, actor_type
-        )
-        self.write_json({"cell_id": cell_id}, status=HTTPStatus.CREATED)
-
-
-class CellHandler(BaseHypernoteHandler):
-    """PUT: replace cell source, DELETE: delete cell."""
-
-    async def put(self, notebook_id: str, cell_id: str) -> None:
-        body = self.get_json_body()
-        source = body.get("source", "")
-        actor_id, actor_type = self.get_actor()
-        orch = await self.get_orch()
-        await orch.replace_cell_source(notebook_id, cell_id, source, actor_id, actor_type)
-        self.write_json({"updated": True})
-
-    async def delete(self, notebook_id: str, cell_id: str) -> None:
-        orch = await self.get_orch()
-        await orch.delete_cell(notebook_id, cell_id)
-        self.write_json({"deleted": True})
-
-
-class CellAttributionHandler(BaseHypernoteHandler):
-    """GET: cell attribution info."""
-
-    async def get(self, notebook_id: str, cell_id: str) -> None:
-        orch = await self.get_orch()
-        attr = await orch.ledger.get_cell_attribution(notebook_id, cell_id)
-        if attr is None:
-            self.write_json({})
-            return
-        self.write_json({
-            "last_editor_id": attr.last_editor_id,
-            "last_editor_type": attr.last_editor_type,
-            "last_executor_id": attr.last_executor_id,
-            "last_executor_type": attr.last_executor_type,
-            "updated_at": attr.updated_at,
-        })
-
-
-# --- Execution handlers ---
+    @staticmethod
+    def decode_notebook_id(notebook_id: str) -> str:
+        return urllib.parse.unquote(notebook_id)
 
 
 class ExecuteHandler(BaseHypernoteHandler):
-    """POST: queue execution for cells."""
-
+    @tornado.web.authenticated
     async def post(self, notebook_id: str) -> None:
+        notebook_id = self.decode_notebook_id(notebook_id)
         body = self.get_json_body()
         cell_ids = body.get("cell_ids", [])
         if not cell_ids:
@@ -157,68 +58,235 @@ class ExecuteHandler(BaseHypernoteHandler):
         actor_id, actor_type = self.get_actor()
         orch = await self.get_orch()
         job = await orch.queue_execution(notebook_id, cell_ids, actor_id, actor_type)
-        self.write_json({
-            "job_id": job.job_id,
-            "status": job.status.value,
-            "notebook_id": notebook_id,
-        }, status=HTTPStatus.ACCEPTED)
+        self.write_json(
+            {
+                "job_id": job.job_id,
+                "status": job.status.value,
+                "notebook_id": notebook_id,
+                "request_uids": job.request_uids,
+            },
+            status=HTTPStatus.ACCEPTED,
+        )
+
+
+class NotebookDocumentHandler(BaseHypernoteHandler):
+    @tornado.web.authenticated
+    async def get(self, notebook_id: str) -> None:
+        notebook_id = self.decode_notebook_id(notebook_id)
+        content = self.get_argument("content", "1") != "0"
+        orch = await self.get_orch()
+        try:
+            model = await orch.notebook_accessor.get_notebook_model(notebook_id, content=content)
+        except Exception as exc:
+            raise tornado.web.HTTPError(404, reason=str(exc)) from exc
+        self.write_json(model)
+
+    @tornado.web.authenticated
+    async def put(self, notebook_id: str) -> None:
+        notebook_id = self.decode_notebook_id(notebook_id)
+        orch = await self.get_orch()
+        body = self.get_json_body()
+        try:
+            model = await orch.notebook_accessor.create_notebook(notebook_id, body)
+        except Exception as exc:
+            raise tornado.web.HTTPError(400, reason=str(exc)) from exc
+        self.write_json(model)
+
+
+class NotebookCellsHandler(BaseHypernoteHandler):
+    @tornado.web.authenticated
+    async def get(self, notebook_id: str) -> None:
+        notebook_id = self.decode_notebook_id(notebook_id)
+        orch = await self.get_orch()
+        cells = await orch.notebook_accessor.list_cells(notebook_id)
+        self.write_json({"cells": cells})
+
+    @tornado.web.authenticated
+    async def post(self, notebook_id: str) -> None:
+        notebook_id = self.decode_notebook_id(notebook_id)
+        body = self.get_json_body()
+        actor_id, actor_type = self.get_actor()
+        cell_type = body.get("cell_type", "code")
+        cell_id = body.get("id")
+        source = body.get("source", "")
+        cell = {
+            "id": cell_id,
+            "cell_type": cell_type,
+            "execution_count": None,
+            "metadata": body.get("metadata", {}),
+            "outputs": [],
+            "source": source,
+        }
+        orch = await self.get_orch()
+        try:
+            created = await orch.notebook_accessor.insert_cell(
+                notebook_id,
+                cell,
+                before=body.get("before"),
+                after=body.get("after"),
+            )
+        except ValueError as exc:
+            raise tornado.web.HTTPError(400, reason=str(exc)) from exc
+        await orch.ledger.update_cell_attribution(
+            notebook_id,
+            created["id"],
+            editor_id=actor_id,
+            editor_type=actor_type,
+        )
+        self.write_json({"cell": created}, status=HTTPStatus.CREATED)
+
+
+class NotebookCellHandler(BaseHypernoteHandler):
+    @tornado.web.authenticated
+    async def get(self, notebook_id: str, cell_id: str) -> None:
+        notebook_id = self.decode_notebook_id(notebook_id)
+        orch = await self.get_orch()
+        try:
+            cell = await orch.notebook_accessor.get_cell(notebook_id, cell_id)
+        except ValueError as exc:
+            raise tornado.web.HTTPError(404, reason=str(exc)) from exc
+        self.write_json({"cell": cell})
+
+    @tornado.web.authenticated
+    async def patch(self, notebook_id: str, cell_id: str) -> None:
+        notebook_id = self.decode_notebook_id(notebook_id)
+        actor_id, actor_type = self.get_actor()
+        body = self.get_json_body()
+        if "source" not in body:
+            raise tornado.web.HTTPError(400, reason="source required")
+        orch = await self.get_orch()
+        try:
+            cell = await orch.notebook_accessor.replace_cell_source(
+                notebook_id,
+                cell_id,
+                body["source"],
+            )
+        except ValueError as exc:
+            raise tornado.web.HTTPError(400, reason=str(exc)) from exc
+        await orch.ledger.update_cell_attribution(
+            notebook_id,
+            cell_id,
+            editor_id=actor_id,
+            editor_type=actor_type,
+        )
+        self.write_json({"cell": cell})
+
+    @tornado.web.authenticated
+    async def delete(self, notebook_id: str, cell_id: str) -> None:
+        notebook_id = self.decode_notebook_id(notebook_id)
+        orch = await self.get_orch()
+        try:
+            await orch.notebook_accessor.delete_cell(notebook_id, cell_id)
+        except ValueError as exc:
+            raise tornado.web.HTTPError(404, reason=str(exc)) from exc
+        self.write_json({"deleted": True})
+
+
+class NotebookCellMoveHandler(BaseHypernoteHandler):
+    @tornado.web.authenticated
+    async def post(self, notebook_id: str, cell_id: str) -> None:
+        notebook_id = self.decode_notebook_id(notebook_id)
+        actor_id, actor_type = self.get_actor()
+        body = self.get_json_body()
+        orch = await self.get_orch()
+        try:
+            cell = await orch.notebook_accessor.move_cell(
+                notebook_id,
+                cell_id,
+                before=body.get("before"),
+                after=body.get("after"),
+            )
+        except ValueError as exc:
+            raise tornado.web.HTTPError(400, reason=str(exc)) from exc
+        await orch.ledger.update_cell_attribution(
+            notebook_id,
+            cell_id,
+            editor_id=actor_id,
+            editor_type=actor_type,
+        )
+        self.write_json({"cell": cell})
+
+
+class NotebookCellClearOutputsHandler(BaseHypernoteHandler):
+    @tornado.web.authenticated
+    async def post(self, notebook_id: str, cell_id: str) -> None:
+        notebook_id = self.decode_notebook_id(notebook_id)
+        actor_id, actor_type = self.get_actor()
+        orch = await self.get_orch()
+        try:
+            cell = await orch.notebook_accessor.clear_outputs(notebook_id, cell_id)
+        except ValueError as exc:
+            raise tornado.web.HTTPError(404, reason=str(exc)) from exc
+        await orch.ledger.update_cell_attribution(
+            notebook_id,
+            cell_id,
+            editor_id=actor_id,
+            editor_type=actor_type,
+        )
+        self.write_json({"cell": cell})
 
 
 class JobsHandler(BaseHypernoteHandler):
-    """GET: list jobs with optional filters."""
-
+    @tornado.web.authenticated
     async def get(self) -> None:
         notebook_id = self.get_argument("notebook_id", None)
+        if notebook_id is not None:
+            notebook_id = self.decode_notebook_id(notebook_id)
         status_str = self.get_argument("status", None)
         status = JobStatus(status_str) if status_str else None
         orch = await self.get_orch()
         jobs = await orch.list_jobs(notebook_id=notebook_id, status=status)
-        self.write_json({
-            "jobs": [
-                {
-                    "job_id": j.job_id,
-                    "notebook_id": j.notebook_id,
-                    "actor_id": j.actor_id,
-                    "actor_type": j.actor_type.value,
-                    "action": j.action.value,
-                    "status": j.status.value,
-                    "target_cells": j.target_cells,
-                    "created_at": j.created_at,
-                    "started_at": j.started_at,
-                    "completed_at": j.completed_at,
-                }
-                for j in jobs
-            ]
-        })
+        self.write_json(
+            {
+                "jobs": [
+                    {
+                        "job_id": job.job_id,
+                        "notebook_id": job.notebook_id,
+                        "actor_id": job.actor_id,
+                        "actor_type": job.actor_type.value,
+                        "action": job.action.value,
+                        "status": job.status.value,
+                        "target_cells": job.target_cells,
+                        "request_uids": job.request_uids,
+                        "created_at": job.created_at,
+                        "started_at": job.started_at,
+                        "completed_at": job.completed_at,
+                        "runtime_id": job.runtime_id,
+                    }
+                    for job in jobs
+                ]
+            }
+        )
 
 
 class JobHandler(BaseHypernoteHandler):
-    """GET: single job status."""
-
+    @tornado.web.authenticated
     async def get(self, job_id: str) -> None:
         orch = await self.get_orch()
         job = await orch.get_job(job_id)
         if job is None:
             raise tornado.web.HTTPError(404, reason=f"Job {job_id} not found")
-        self.write_json({
-            "job_id": job.job_id,
-            "notebook_id": job.notebook_id,
-            "actor_id": job.actor_id,
-            "actor_type": job.actor_type.value,
-            "action": job.action.value,
-            "status": job.status.value,
-            "target_cells": job.target_cells,
-            "created_at": job.created_at,
-            "started_at": job.started_at,
-            "completed_at": job.completed_at,
-            "runtime_id": job.runtime_id,
-            "reconnect_ref": job.reconnect_ref,
-        })
+        self.write_json(
+            {
+                "job_id": job.job_id,
+                "notebook_id": job.notebook_id,
+                "actor_id": job.actor_id,
+                "actor_type": job.actor_type.value,
+                "action": job.action.value,
+                "status": job.status.value,
+                "target_cells": job.target_cells,
+                "request_uids": job.request_uids,
+                "created_at": job.created_at,
+                "started_at": job.started_at,
+                "completed_at": job.completed_at,
+                "runtime_id": job.runtime_id,
+                "reconnect_ref": job.reconnect_ref,
+            }
+        )
 
 
 class SendStdinHandler(BaseHypernoteHandler):
-    """POST: send stdin value for a job awaiting input."""
-
+    @tornado.web.authenticated
     async def post(self, job_id: str) -> None:
         body = self.get_json_body()
         value = body.get("value", "")
@@ -227,57 +295,86 @@ class SendStdinHandler(BaseHypernoteHandler):
         try:
             await orch.send_stdin(job_id, value, actor_id, actor_type)
             self.write_json({"sent": True})
-        except ValueError as e:
-            raise tornado.web.HTTPError(400, reason=str(e))
-
-
-# --- Runtime handlers ---
+        except ValueError as exc:
+            raise tornado.web.HTTPError(400, reason=str(exc)) from exc
 
 
 class RuntimeStatusHandler(BaseHypernoteHandler):
-    """GET: runtime status for a notebook."""
-
+    @tornado.web.authenticated
     async def get(self, notebook_id: str) -> None:
+        notebook_id = self.decode_notebook_id(notebook_id)
         orch = await self.get_orch()
-        status = await orch.get_runtime_status(notebook_id)
-        self.write_json(status)
+        runtime = await orch.get_runtime_status(notebook_id)
+        active_jobs = await orch.list_active_jobs(notebook_id)
+        runtime["jobs"] = [job.job_id for job in active_jobs]
+        self.write_json(runtime)
 
 
 class RuntimeOpenHandler(BaseHypernoteHandler):
-    """POST: open/attach a runtime for a notebook."""
-
+    @tornado.web.authenticated
     async def post(self, notebook_id: str) -> None:
+        notebook_id = self.decode_notebook_id(notebook_id)
         body = self.get_json_body()
         client_id = body.get("client_id", "api-client")
+        kernel_name = body.get("kernel_name", "python3")
         orch = await self.get_orch()
-        info = await orch.runtime_manager.open_runtime(notebook_id, client_id)
-        self.write_json({
-            "runtime_id": info.runtime_id,
-            "state": info.state.value,
-            "kernel_id": info.kernel_id,
-        })
+        room = await orch.runtime_manager.open_runtime(
+            notebook_id,
+            client_id,
+            kernel_name=kernel_name,
+        )
+        self.write_json(
+            {
+                "room_id": room.room_id,
+                "state": room.state.value,
+                "session_id": room.session_id,
+                "kernel_id": room.kernel_id,
+                "kernel_name": room.kernel_name,
+                "attached_clients": sorted(room.attached_clients),
+            }
+        )
 
 
 class RuntimeStopHandler(BaseHypernoteHandler):
-    """POST: stop runtime for a notebook."""
-
+    @tornado.web.authenticated
     async def post(self, notebook_id: str) -> None:
+        notebook_id = self.decode_notebook_id(notebook_id)
         orch = await self.get_orch()
-        runtime = orch.runtime_manager.get_runtime_for_notebook(notebook_id)
-        if runtime is None:
+        room = orch.runtime_manager.get_room_for_notebook(notebook_id)
+        if room is None:
             raise tornado.web.HTTPError(404, reason="No runtime for notebook")
-        info = await orch.runtime_manager.stop_runtime(runtime.runtime_id)
-        self.write_json({"runtime_id": info.runtime_id, "state": info.state.value})
+        room = await orch.runtime_manager.stop_runtime(room.room_id)
+        self.write_json({"room_id": room.room_id, "state": room.state.value})
 
 
 class InterruptHandler(BaseHypernoteHandler):
-    """POST: interrupt execution for a notebook."""
-
+    @tornado.web.authenticated
     async def post(self, notebook_id: str) -> None:
+        notebook_id = self.decode_notebook_id(notebook_id)
         actor_id, actor_type = self.get_actor()
         orch = await self.get_orch()
         try:
             await orch.interrupt(notebook_id, actor_id, actor_type)
             self.write_json({"interrupted": True})
-        except ValueError as e:
-            raise tornado.web.HTTPError(400, reason=str(e))
+        except ValueError as exc:
+            raise tornado.web.HTTPError(400, reason=str(exc)) from exc
+
+
+class CellAttributionHandler(BaseHypernoteHandler):
+    @tornado.web.authenticated
+    async def get(self, notebook_id: str, cell_id: str) -> None:
+        notebook_id = self.decode_notebook_id(notebook_id)
+        orch = await self.get_orch()
+        attr = await orch.ledger.get_cell_attribution(notebook_id, cell_id)
+        if attr is None:
+            self.write_json({})
+            return
+        self.write_json(
+            {
+                "last_editor_id": attr.last_editor_id,
+                "last_editor_type": attr.last_editor_type,
+                "last_executor_id": attr.last_executor_id,
+                "last_executor_type": attr.last_executor_type,
+                "updated_at": attr.updated_at,
+            }
+        )

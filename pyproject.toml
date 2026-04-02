@@ -1,7 +1,7 @@
 [project]
 name = "hypernote"
 version = "0.1.0"
-description = "Server-owned notebook execution with actor attribution, queue visibility, and MCP agent surface"
+description = "Thin control plane for Jupyter notebook execution with jobs, attribution, and runtime lifecycle"
 requires-python = ">=3.11"
 dependencies = [
     "jupyter-server>=2.0",
@@ -29,7 +29,7 @@ dev = [
 hypernote = "hypernote.cli.main:cli"
 
 [project.entry-points."jupyter_server.extensions"]
-hypernote = "hypernote.server.extension"
+hypernote = "hypernote"
 
 [build-system]
 requires = ["hatchling"]
