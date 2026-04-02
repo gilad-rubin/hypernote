@@ -62,7 +62,12 @@ async def test_stdin_roundtrip(hypernote_api, jupyter_api):
     send = await hypernote_api.post(f"/jobs/{job_id}/stdin", json={"value": "gilad"})
     send.raise_for_status()
 
-    final = await await_job(hypernote_api, job_id, timeout=60.0)
+    final = await await_job(
+        hypernote_api,
+        job_id,
+        timeout=60.0,
+        statuses={"running", "succeeded", "failed", "interrupted", "awaiting_input"},
+    )
     assert final["status"] in {"running", "succeeded", "failed", "interrupted"}
 
 

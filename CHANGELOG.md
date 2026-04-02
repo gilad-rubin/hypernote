@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.1.1 - 2026-04-02
+
+Patch release focused on release automation hardening.
+
+### Changed
+
+- updated the GitHub release workflow to newer official action majors where available
+- replaced the third-party GitHub release action with the `gh` CLI in release automation
+- fixed the release workflow to install Playwright browser binaries before running browser tests
+- fixed the release workflow to run tests with the `dev` extra installed
+- fixed the PyPI publish step to use token-only `uv publish` authentication
+
+### Notes
+
+- package code is unchanged from `0.1.0`
+- this release exists to verify and stabilize the automated release path
+
 ## 0.1.0 - 2026-04-02
 
 Initial public release.

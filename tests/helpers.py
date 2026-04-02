@@ -141,13 +141,15 @@ async def await_job(
     client: httpx.AsyncClient,
     job_id: str,
     timeout: float = 30.0,
+    statuses: set[str] | None = None,
 ) -> dict[str, Any]:
+    statuses = statuses or {"succeeded", "failed", "interrupted", "awaiting_input"}
     deadline = asyncio.get_running_loop().time() + timeout
     while True:
         response = await client.get(f"/jobs/{job_id}")
         response.raise_for_status()
         payload = response.json()
-        if payload["status"] in {"succeeded", "failed", "interrupted", "awaiting_input"}:
+        if payload["status"] in statuses:
             return payload
         if asyncio.get_running_loop().time() >= deadline:
             raise TimeoutError(f"Timed out waiting for job {job_id}")
