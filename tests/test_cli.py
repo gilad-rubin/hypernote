@@ -587,6 +587,27 @@ def test_setup_doctor_uses_sdk_control(runner, monkeypatch):
     assert payload["jobs_endpoint"] is True
 
 
+def test_setup_doctor_reports_default_kernel_launcher(runner, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+
+    class FakeControl:
+        def list_jobs(self) -> dict:
+            return {"jobs": []}
+
+        def get_kernelspec(self, kernel_name: str) -> dict:
+            assert kernel_name == "python3"
+            return {"name": "python3", "spec": {"argv": ["/repo/.venv/bin/python", "-m"]}}
+
+    monkeypatch.setattr(cli_main, "_sdk_control", lambda ctx: FakeControl())
+
+    result = runner.invoke(cli, ["setup", "doctor"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["hypernote_api"] == "ok"
+    assert payload["default_kernel"] == "/repo/.venv/bin/python"
+
+
 def test_setup_serve_launches_jupyterlab_with_hypernote_extensions(
     runner,
     monkeypatch,

@@ -1484,6 +1484,15 @@ def setup_doctor_cmd(ctx: click.Context, path: str | None) -> None:
     except Exception as exc:  # pragma: no cover - exercised via CLI output
         report["error"] = str(exc)
 
+    if report.get("hypernote_api") == "ok":
+        try:
+            default_spec = control.get_kernelspec("python3")
+            launcher = _kernelspec_launcher(default_spec)
+            if launcher is not None:
+                report["default_kernel"] = launcher
+        except Exception:  # pragma: no cover - best-effort enrichment
+            pass
+
     if path and report.get("hypernote_api") == "ok":
         report["path"] = path
         try:

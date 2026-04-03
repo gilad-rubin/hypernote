@@ -26,15 +26,16 @@ Once both are in place, all commands are just `uv run hypernote ...`.
 
 ## Server lifecycle
 
-One server serves all notebooks in a workspace. Do not start multiple servers.
+One server serves all notebooks and all agents in a workspace. Do not start multiple servers.
 
-**Before starting a server, check if one is already running:**
+**Check if a server is already running:**
 
 ```bash
 uv run hypernote setup doctor
 ```
 
-If `hypernote_api` is `"ok"`, a server is already running — use it. Skip to notebook work.
+The output includes `default_kernel` — the Python interpreter the server's kernel uses.
+Verify it points to your repo's `.venv/bin/python`. If it does, the server is good — use it.
 
 **If no server is running, start one in the background:**
 
@@ -42,21 +43,25 @@ If `hypernote_api` is `"ok"`, a server is already running — use it. Skip to no
 uv run hypernote setup serve &
 ```
 
-`setup serve` is a foreground process. Run it in the background so your terminal stays
-available for notebook commands. The default address is `http://127.0.0.1:8888`.
+`setup serve` is a foreground process — run it in the background so your terminal stays
+available. The default address is `http://127.0.0.1:8888`.
+
+**If the server is running but `default_kernel` points to the wrong Python** (e.g., a
+different repo's `.venv`), stop the old server and start a new one with `setup serve`
+from this repo. This is the only case where you should restart a running server.
 
 **If port 8888 is taken**, use a different port and point all commands at it:
 
 ```bash
 uv run hypernote setup serve --port 8889 &
-uv run hypernote --server http://127.0.0.1:8889 doctor
+uv run hypernote --server http://127.0.0.1:8889 setup doctor
 ```
 
 ## Quick Start
 
 ```bash
-uv run hypernote setup serve
-uv run hypernote setup doctor
+uv run hypernote setup doctor            # check for existing server
+uv run hypernote setup serve &           # only if no server is running
 uv run hypernote create tmp/demo.ipynb --empty
 uv run hypernote ix tmp/demo.ipynb -s 'value = 20 + 22'
 uv run hypernote status tmp/demo.ipynb --full
