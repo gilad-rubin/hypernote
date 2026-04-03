@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 from tornado import web
 
-from hypernote.runtime_manager import RuntimeManager, RuntimePolicy, RuntimeState
+from hypernote.runtime_manager import (
+    RuntimeKernelMismatchError,
+    RuntimeManager,
+    RuntimePolicy,
+    RuntimeState,
+)
 
 
 class MockKernelManager:
@@ -100,6 +105,13 @@ async def test_reuse_existing_runtime(manager: RuntimeManager):
     room2 = await manager.open_runtime("nb-1.ipynb", "client-b")
     assert room1.room_id == room2.room_id
     assert room2.attached_clients == {"client-a", "client-b"}
+
+
+async def test_ensure_room_rejects_live_kernel_mismatch(manager: RuntimeManager):
+    await manager.ensure_room("nb-1.ipynb", kernel_name="python3")
+
+    with pytest.raises(RuntimeKernelMismatchError, match="wants kernel 'other-kernel'"):
+        await manager.ensure_room("nb-1.ipynb", kernel_name="other-kernel")
 
 
 async def test_detach_transitions_to_live_detached(manager: RuntimeManager):

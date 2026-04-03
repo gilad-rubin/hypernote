@@ -58,13 +58,18 @@ class FakeJob:
         }
 
 
+class FakeTimeoutJob(FakeJob):
+    def wait(self, timeout: float | None = None) -> "FakeJob":  # noqa: ARG002
+        raise cli_main.ExecutionTimeoutError(cli_main._job_timeout_message(self))
+
+
 class FakeRuntime:
     def __init__(self, notebook: "FakeNotebook"):
         self.notebook = notebook
         self.status = RuntimeStatus.STOPPED
 
     def ensure(self) -> "FakeRuntime":
-        self.status = RuntimeStatus.IDLE
+        self.status = RuntimeStatus.LIVE_ATTACHED
         return self
 
     def stop(self) -> "FakeRuntime":
@@ -278,7 +283,7 @@ class FakeNotebook:
 
     def restart(self) -> FakeRuntime:
         self.restarted = True
-        self.runtime.status = RuntimeStatus.IDLE
+        self.runtime.status = RuntimeStatus.LIVE_ATTACHED
         return self.runtime
 
     def interrupt(self) -> None:
@@ -342,7 +347,7 @@ def test_ix_non_tty_returns_compact_json_by_default(runner, fake_notebooks, monk
     result = runner.invoke(cli, ["ix", "demo.ipynb", "-s", "print(1)"])
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.output.strip().splitlines()[-1])
     assert payload["command"] == "ix"
     assert payload["job"]["status"] == "succeeded"
     assert payload["inserted_cells"][0]["id"] == "cell-1"
@@ -409,6 +414,19 @@ def test_ix_stream_json_emits_events(runner, fake_notebooks, monkeypatch):
     assert "job_completed" in event_names
 
 
+def test_create_empty_removes_default_cells(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("new.ipynb", FakeNotebook("new.ipynb"))
+    nb.cells.insert_code("", id="default-blank")
+
+    result = runner.invoke(cli, ["create", "new.ipynb", "--empty"])
+
+    assert result.exit_code == 0
+    assert len(nb._order) == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "create"
+
+
 def test_exec_on_markdown_cell_fails_clearly(runner, fake_notebooks, monkeypatch):
     monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
     nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
@@ -442,6 +460,45 @@ def test_batch_ix_no_wait_is_rejected(runner, fake_notebooks, monkeypatch):
 
     assert result.exit_code != 0
     assert "batch ix does not support --no-wait" in result.output
+
+
+def test_batch_ix_reports_partial_state_after_failure(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    nb.next_job_transitions.append(
+        [
+            {
+                "status": JobStatus.FAILED,
+                "execution_counts": {"setup-cell": 1},
+            }
+        ]
+    )
+
+    result = runner.invoke(
+        cli,
+        [
+            "ix",
+            "demo.ipynb",
+            "--cells-json",
+            json.dumps(
+                [
+                    {"id": "intro-md", "type": "markdown", "source": "# Intro"},
+                    {"id": "setup-cell", "type": "code", "source": "raise RuntimeError('boom')"},
+                    {"id": "later-cell", "type": "code", "source": "print('later')"},
+                ]
+            ),
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output.strip().splitlines()[-1])
+    assert payload["status"] == "error"
+    assert payload["halt_reason"] == "job_failed"
+    assert payload["last_processed_cell_id"] == "setup-cell"
+    assert payload["cells_inserted"] == 2
+    assert payload["cells_total"] == 3
+    assert payload["cells_remaining"] == 1
+    assert [entry["cell_id"] for entry in payload["results"]] == ["intro-md", "setup-cell"]
 
 
 def test_edit_replace_maps_to_sdk_mutation(runner, fake_notebooks, monkeypatch):
@@ -528,3 +585,118 @@ def test_setup_doctor_uses_sdk_control(runner, monkeypatch):
     payload = json.loads(result.output)
     assert payload["hypernote_api"] == "ok"
     assert payload["jobs_endpoint"] is True
+
+
+def test_setup_serve_launches_jupyterlab_with_hypernote_extensions(
+    runner,
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(cli_main.importlib.util, "find_spec", lambda name: object())
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, cwd, check):  # noqa: ANN001
+        captured["cmd"] = cmd
+        captured["cwd"] = cwd
+        captured["check"] = check
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+
+    result = runner.invoke(
+        cli,
+        [
+            "--server",
+            "http://127.0.0.1:8899",
+            "setup",
+            "serve",
+            "--root",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Starting Hypernote Jupyter server at http://127.0.0.1:8899" in result.output
+    cmd = captured["cmd"]
+    assert cmd[:3] == [cli_main.sys.executable, "-m", "jupyterlab"]
+    assert "--no-browser" in cmd
+    assert "--ServerApp.ip=127.0.0.1" in cmd
+    assert "--ServerApp.port=8899" in cmd
+    assert f"--ServerApp.root_dir={tmp_path.resolve()}" in cmd
+    assert (
+        f"--ServerApp.jpserver_extensions={cli_main.HYPERNOTE_EXTENSION_FLAGS}" in cmd
+    )
+    assert captured["cwd"] == str(tmp_path.resolve())
+    assert captured["check"] is False
+
+
+def test_setup_serve_fails_cleanly_without_jupyterlab(runner, monkeypatch, tmp_path):
+    monkeypatch.setattr(cli_main.importlib.util, "find_spec", lambda name: None)
+
+    result = runner.invoke(cli, ["setup", "serve", "--root", str(tmp_path)])
+
+    assert result.exit_code != 0
+    assert "jupyterlab is not installed" in result.output
+
+
+def test_setup_doctor_with_path_reports_runtime_and_kernel_details(runner, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+
+    class FakeControl:
+        def list_jobs(self) -> dict:
+            return {"jobs": []}
+
+        def get_notebook_document(self, notebook_id: str, *, content: bool = True) -> dict:
+            assert notebook_id == "demo.ipynb"
+            assert content is True
+            return {
+                "path": notebook_id,
+                "content": {
+                    "metadata": {
+                        "kernelspec": {"display_name": "Subtext", "name": "subtext-kernel"}
+                    }
+                },
+            }
+
+        def get_runtime_status(self, notebook_id: str) -> dict:
+            assert notebook_id == "demo.ipynb"
+            return {"state": "live-detached", "kernel_name": "python3"}
+
+        def get_kernelspec(self, kernel_name: str) -> dict:
+            assert kernel_name == "subtext-kernel"
+            return {"name": kernel_name, "spec": {"argv": ["/envs/subtext/bin/python", "-m"]}}
+
+    monkeypatch.setattr(cli_main, "_sdk_control", lambda ctx: FakeControl())
+
+    result = runner.invoke(cli, ["setup", "doctor", "--path", "demo.ipynb"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["path"] == "demo.ipynb"
+    assert payload["notebook_kernelspec"] == "subtext-kernel"
+    assert payload["runtime_state"] == "live-detached"
+    assert payload["runtime_kernel_name"] == "python3"
+    assert payload["kernelspec_launcher"] == "/envs/subtext/bin/python"
+    assert payload["warnings"]
+
+
+def test_job_await_timeout_surfaces_recovery_hint(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    nb.cells.insert_code("print(1)", id="code-1")
+    job = FakeTimeoutJob(nb, ("code-1",))
+    job.status = JobStatus.RUNNING
+
+    class FakeControl:
+        def get_job(self, job_id: str) -> FakeJob:
+            assert job_id == "job-1"
+            return job
+
+    monkeypatch.setattr(cli_main, "_sdk_control", lambda ctx: FakeControl())
+
+    result = runner.invoke(cli, ["job", "await", "job-1", "--timeout", "0.01"])
+
+    assert result.exit_code != 0
+    assert "last status: running" in result.output
+    assert "hypernote job get job-1" in result.output
+    assert "hypernote cat demo.ipynb --no-outputs" in result.output

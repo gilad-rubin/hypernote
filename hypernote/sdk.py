@@ -235,6 +235,41 @@ class _ControlPlane(_SDKMixin):
         _raise_response(response)
         return response.json()
 
+    def get_notebook_document(
+        self,
+        notebook_id: str,
+        *,
+        content: bool = True,
+    ) -> dict[str, Any]:
+        quoted = urllib.parse.quote(notebook_id, safe="")
+        response = self._request(
+            "GET",
+            f"/hypernote/api/notebooks/{quoted}/document",
+            hypernote=True,
+            params={"content": int(content)},
+        )
+        _raise_notebook_response(response, notebook_id)
+        return response.json()
+
+    def get_runtime_status(self, notebook_id: str) -> dict[str, Any]:
+        quoted = urllib.parse.quote(notebook_id, safe="")
+        response = self._request(
+            "GET",
+            f"/hypernote/api/notebooks/{quoted}/runtime",
+            hypernote=True,
+        )
+        _raise_notebook_response(response, notebook_id)
+        return response.json()
+
+    def get_kernelspec(self, kernel_name: str) -> dict[str, Any]:
+        quoted = urllib.parse.quote(kernel_name, safe="")
+        response = self._request(
+            "GET",
+            f"/api/kernelspecs/{quoted}",
+        )
+        _raise_response(response)
+        return response.json()
+
     def send_job_stdin(self, job_id: str, value: str) -> dict[str, Any]:
         response = self._request(
             "POST",
@@ -733,7 +768,7 @@ class Job:
             }:
                 return self
             if deadline is not None and time.monotonic() >= deadline:
-                raise ExecutionTimeoutError(f"Timed out waiting for job {self.id}")
+                raise ExecutionTimeoutError(_job_timeout_message(self))
             time.sleep(0.25)
 
     def send_stdin(self, value: str) -> None:
@@ -973,3 +1008,12 @@ def _raise_response(response: httpx.Response) -> None:
     if response.status_code == 400:
         raise HypernoteError(response.text or "Bad request")
     raise HypernoteError(f"{response.status_code}: {response.text}")
+
+
+def _job_timeout_message(job: Job) -> str:
+    return (
+        f"Timed out waiting for job {job.id} "
+        f"(last status: {job.status.value}). "
+        f"Check `hypernote job get {job.id}` or "
+        f"`hypernote cat {job.notebook_path} --no-outputs` for current state."
+    )

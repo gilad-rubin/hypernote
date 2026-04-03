@@ -12,6 +12,7 @@ from jupyter_server.base.handlers import APIHandler
 
 from hypernote.actor_ledger import ActorType, JobStatus
 from hypernote.execution_orchestrator import ExecutionOrchestrator
+from hypernote.runtime_manager import RuntimeKernelMismatchError
 
 
 class BaseHypernoteHandler(APIHandler):
@@ -57,7 +58,18 @@ class ExecuteHandler(BaseHypernoteHandler):
             raise tornado.web.HTTPError(400, reason="cell_ids required")
         actor_id, actor_type = self.get_actor()
         orch = await self.get_orch()
-        job = await orch.queue_execution(notebook_id, cell_ids, actor_id, actor_type)
+        try:
+            job = await orch.queue_execution(
+                notebook_id,
+                cell_ids,
+                actor_id,
+                actor_type,
+                kernel_name=body.get("kernel_name"),
+            )
+        except RuntimeKernelMismatchError as exc:
+            raise tornado.web.HTTPError(409, reason=str(exc)) from exc
+        except Exception as exc:
+            raise tornado.web.HTTPError(400, reason=str(exc) or exc.__class__.__name__) from exc
         self.write_json(
             {
                 "job_id": job.job_id,
@@ -315,13 +327,21 @@ class RuntimeOpenHandler(BaseHypernoteHandler):
         notebook_id = self.decode_notebook_id(notebook_id)
         body = self.get_json_body()
         client_id = body.get("client_id", "api-client")
-        kernel_name = body.get("kernel_name", "python3")
         orch = await self.get_orch()
-        room = await orch.runtime_manager.open_runtime(
+        kernel_name = await orch.resolve_kernel_name(
             notebook_id,
-            client_id,
-            kernel_name=kernel_name,
+            explicit_kernel_name=body.get("kernel_name"),
         )
+        try:
+            room = await orch.runtime_manager.open_runtime(
+                notebook_id,
+                client_id,
+                kernel_name=kernel_name,
+            )
+        except RuntimeKernelMismatchError as exc:
+            raise tornado.web.HTTPError(409, reason=str(exc)) from exc
+        except Exception as exc:
+            raise tornado.web.HTTPError(400, reason=str(exc) or exc.__class__.__name__) from exc
         self.write_json(
             {
                 "room_id": room.room_id,

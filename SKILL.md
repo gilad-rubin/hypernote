@@ -9,39 +9,142 @@ description: Work against Hypernote's notebook-first SDK and agent-first CLI. Us
 
 Run `uv run hypernote --help` for the current command list, and `uv run hypernote <command> --help` for exact syntax.
 
+## Prerequisite
+
+Hypernote CLI requires two things:
+
+1. **`hypernote` installed in the current repo's environment.**
+   If `uv run hypernote --help` fails, install it first:
+   ```bash
+   uv add hypernote --dev
+   ```
+
+2. **A running Jupyter server with the Hypernote extension enabled.**
+   See "Server lifecycle" below.
+
+Once both are in place, all commands are just `uv run hypernote ...`.
+
+## Server lifecycle
+
+One server serves all notebooks in a workspace. Do not start multiple servers.
+
+**Before starting a server, check if one is already running:**
+
+```bash
+uv run hypernote setup doctor
+```
+
+If `hypernote_api` is `"ok"`, a server is already running — use it. Skip to notebook work.
+
+**If no server is running, start one in the background:**
+
+```bash
+uv run hypernote setup serve &
+```
+
+`setup serve` is a foreground process. Run it in the background so your terminal stays
+available for notebook commands. The default address is `http://127.0.0.1:8888`.
+
+**If port 8888 is taken**, use a different port and point all commands at it:
+
+```bash
+uv run hypernote setup serve --port 8889 &
+uv run hypernote --server http://127.0.0.1:8889 doctor
+```
+
 ## Quick Start
 
 ```bash
-uv run hypernote create tmp/demo.ipynb
-uv run hypernote ix tmp/demo.ipynb -s 'value = 20 + 22\nprint(value)'
+uv run hypernote setup serve
+uv run hypernote setup doctor
+uv run hypernote create tmp/demo.ipynb --empty
+uv run hypernote ix tmp/demo.ipynb -s 'value = 20 + 22'
 uv run hypernote status tmp/demo.ipynb --full
 ```
 
-## Use This Surface
+## Core Workflow
 
-- `ix` — insert a new cell and run it; this is the default happy path
-- `exec` — run existing cell ids only
-- `edit` — mutate notebook cells without executing
-- `run-all` / `restart` / `restart-run-all` — notebook-wide control
-- `status` / `diff` — observe current notebook state and changes
-- `cat` — inspect cells and outputs directly
+The normal way to build and run a notebook is one cell at a time:
+
+```
+ix  →  read output  →  decide next cell  →  ix  →  repeat
+```
+
+This is the happy path. Insert a cell, run it, observe the output, then decide what comes next.
+Do not pre-plan all cells and batch-insert them. Work iteratively.
+
+### Passing cell source
+
+Three input modes, from simplest to most robust:
+
+1. **Inline** for short single-line cells:
+   ```bash
+   uv run hypernote ix nb.ipynb -s 'print("hello")'
+   ```
+
+2. **Stdin with heredoc** for multi-line cells (preferred for anything non-trivial):
+   ```bash
+   cat <<'EOF' | uv run hypernote ix nb.ipynb
+   import pandas as pd
+   df = pd.read_csv("data.csv")
+   print(df.head())
+   EOF
+   ```
+
+3. **Source file** when the cell is very large or already on disk:
+   ```bash
+   uv run hypernote ix nb.ipynb --source-file path/to/cell.py
+   ```
+
+Do not use `-s` for multi-line code. Shell quoting will corrupt newlines.
+
+### Commands
+
+- `ix` — insert a cell and run it. This is the primary command.
+- `exec` — re-run an existing cell by id (useful after editing a failed cell)
+- `edit` — mutate cell source or structure without executing
+- `run-all` / `restart` / `restart-run-all` — notebook-wide execution
+- `status` / `diff` / `cat` — inspect notebook state and outputs
+
+### When a cell fails
+
+1. Read the error output from `ix`.
+2. Fix the source with `edit replace`.
+3. Re-run with `exec <cell-id>`.
+4. Continue with the next `ix`.
+
+Do not re-insert a failed cell. Edit it in place and re-execute.
+
+### `--cells-file` (batch mode)
+
+`ix --cells-file` inserts and runs multiple cells sequentially. Use it only for known-good
+cell sequences where you do not need to inspect intermediate outputs.
+
+If batch mode halts early (cell failure, interrupt, or input prompt), the output includes
+`halt_reason`, `last_processed_cell_id`, `cells_inserted`, and `cells_remaining` so you
+know exactly where to resume. Cells after the halt point were never inserted into the notebook.
 
 ## Best Practices
 
-1. Prefer `ix` over separate insert + execute steps.
-2. Prefer the SDK and CLI over raw HTTP unless you are explicitly working on server routes.
-3. Treat Jupyter shared documents as the source of truth. Open or closed JupyterLab tabs must not change correctness.
-4. For agents, prefer default non-TTY JSON output unless you intentionally want background streaming.
-5. Use `--stream-json` only when you plan to watch the process; otherwise it wastes context.
-6. Use unique notebook paths in tests and demos.
-7. Move durable notes into `docs/` or `dev/`; keep `tmp/` disposable.
-8. Treat Hypernote jobs, runtime state, and cell attribution as ephemeral coordination state, not durable history.
+1. Work iteratively: `ix` one cell, read the output, then decide the next cell.
+2. Use `create --empty` so you start with a clean notebook, not a Jupyter-inserted blank cell.
+3. Use heredoc or `--source-file` for multi-line cells. Never pass multi-line code through `-s`.
+4. Prefer the SDK and CLI over raw HTTP unless you are explicitly working on server routes.
+5. Treat Jupyter shared documents as the source of truth. Open or closed JupyterLab tabs must not change correctness.
+6. For agents, prefer default non-TTY JSON output unless you intentionally want background streaming.
+7. Use `--stream-json` only when you plan to watch the process; otherwise it wastes context.
+8. Start the server with `hypernote setup serve` instead of hand-writing Jupyter flags.
+9. Skip large rich outputs such as `graph.visualize()` in headless automation unless the visualization is the point of the run.
+10. Use unique notebook paths in tests and demos.
+11. Move durable notes into `docs/` or `dev/`; keep `tmp/` disposable.
+12. Treat Hypernote jobs, runtime state, and cell attribution as ephemeral coordination state, not durable history.
 
 ## Before You Change Behavior
 
-1. Read [AGENTS.md](/Users/giladrubin/python_workspace/hypernote/AGENTS.md).
-2. Check the current public surface in [docs/cli.md](/Users/giladrubin/python_workspace/hypernote/docs/cli.md) and [docs/sdk.md](/Users/giladrubin/python_workspace/hypernote/docs/sdk.md).
-3. If browser-visible execution behavior changes, check [docs/browser-regression-spec.md](/Users/giladrubin/python_workspace/hypernote/docs/browser-regression-spec.md).
+1. Read [AGENTS.md](AGENTS.md).
+2. Check the current public surface in [docs/cli.md](docs/cli.md) and [docs/sdk.md](docs/sdk.md).
+3. If browser-visible execution behavior changes, check [docs/browser-regression-spec.md](docs/browser-regression-spec.md).
+4. If the VS Code embedding experience changes, check [docs/vscode-extension.md](docs/vscode-extension.md).
 
 ## Verification
 

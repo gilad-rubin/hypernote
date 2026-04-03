@@ -22,6 +22,28 @@ from tornado import web
 logger = logging.getLogger(__name__)
 
 
+class RuntimeKernelMismatchError(RuntimeError):
+    """Raised when a live runtime does not match the notebook's desired kernel."""
+
+    def __init__(
+        self,
+        notebook_id: str,
+        *,
+        active_kernel_name: str | None,
+        requested_kernel_name: str,
+    ) -> None:
+        active = active_kernel_name or "<unknown>"
+        super().__init__(
+            "Notebook "
+            f"{notebook_id} wants kernel {requested_kernel_name!r}, "
+            f"but the live runtime is using {active!r}. "
+            "Stop or restart the runtime to pick up the notebook's kernelspec."
+        )
+        self.notebook_id = notebook_id
+        self.active_kernel_name = active_kernel_name
+        self.requested_kernel_name = requested_kernel_name
+
+
 class RuntimeState(str, Enum):
     STARTING = "starting"
     LIVE_ATTACHED = "live-attached"
@@ -98,11 +120,21 @@ class RuntimeManager:
     async def ensure_room(
         self,
         notebook_id: str,
-        kernel_name: str = "python3",
+        kernel_name: str | None = None,
     ) -> NotebookRoom:
         """Ensure a live room exists for ``notebook_id`` without attaching a client."""
+        desired_kernel_name = kernel_name or "python3"
         existing = await self._load_or_refresh_room(notebook_id)
         if existing is not None and existing.is_live:
+            if (
+                existing.kernel_name is not None
+                and existing.kernel_name != desired_kernel_name
+            ):
+                raise RuntimeKernelMismatchError(
+                    notebook_id,
+                    active_kernel_name=existing.kernel_name,
+                    requested_kernel_name=desired_kernel_name,
+                )
             self.touch_activity(existing.room_id)
             return existing
 
@@ -115,7 +147,7 @@ class RuntimeManager:
                 path=notebook_id,
                 name=os.path.basename(notebook_id),
                 type="notebook",
-                kernel_name=kernel_name,
+                kernel_name=desired_kernel_name,
             )
             room.session_id = session["id"]
             room.kernel_id = session["kernel"]["id"]
@@ -138,7 +170,7 @@ class RuntimeManager:
         self,
         notebook_id: str,
         client_id: str,
-        kernel_name: str = "python3",
+        kernel_name: str | None = None,
     ) -> NotebookRoom:
         """Ensure a live room exists and attach a client to it."""
         room = await self.ensure_room(notebook_id, kernel_name=kernel_name)

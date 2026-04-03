@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Added
+
+- added a minimal VS Code extension under `vscode-extension/` that opens JupyterLab in a VS Code custom editor or panel
+- added managed local JupyterLab startup for the extension when no configured server is reachable
+
+### Notes
+
+- the extension is intentionally decoupled from Hypernote-specific UI and connects to plain JupyterLab
+- managed extension launches override Jupyter's default frame-ancestor policy so the embedded view can load inside VS Code
+
+## 0.1.3 - 2026-04-03
+
+Cross-repo runtime hardening and agent ergonomics.
+
+### Added
+
+- `hypernote setup serve` — bootstraps a Hypernote-enabled Jupyter server with all required extensions
+- `hypernote setup doctor --path PATH` — reports notebook kernelspec, live runtime kernel, resolved launcher, and warns on mismatches
+- `hypernote create --empty` — removes any default cells Jupyter auto-inserts so notebooks start clean
+- batch `ix` output now includes `cells_inserted`, `cells_total`, `cells_remaining`, `halt_reason`, and `last_processed_cell_id` on early halt
+- timeout errors now surface job id, last known status, and recovery hints pointing to `job get` and `cat`
+- runtime kernel mismatch detection — clear error when a live runtime's kernel doesn't match notebook metadata, with guidance to restart
+
+### Changed
+
+- execution now resolves kernels as: explicit override > notebook metadata `kernelspec.name` > `python3`
+- `RuntimeManager.ensure_room()` rejects silent reuse when a live room exists with a different kernel name
+- removed all hardcoded local paths from project markdown files — links are now repo-relative
+- SKILL.md rewritten: iterative `ix → observe → ix` is the primary workflow, heredoc/stdin documented for multi-line cells, server lifecycle section added, cross-repo setup simplified to `uv add hypernote --dev`
+
+### Notes
+
+- `--cells-file` batch mode is now documented as a convenience for known-good sequences, not the default workflow
+- the recommended cross-repo pattern is now: install hypernote in the target repo, not `uv run --with`
+
 ## 0.1.1 - 2026-04-02
 
 Patch release focused on release automation hardening.

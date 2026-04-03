@@ -6,10 +6,14 @@ Jupyter owns durable notebook contents and outputs. Hypernote owns an ephemeral 
 
 Start here:
 
-- [Getting Started](/Users/giladrubin/python_workspace/hypernote/docs/getting-started.md)
-- [CLI Reference](/Users/giladrubin/python_workspace/hypernote/docs/cli.md)
-- [SDK Reference](/Users/giladrubin/python_workspace/hypernote/docs/sdk.md)
-- [Runtime Model](/Users/giladrubin/python_workspace/hypernote/docs/runtime-model.md)
-- [Browser Regression Spec](/Users/giladrubin/python_workspace/hypernote/docs/browser-regression-spec.md)
+- [Getting Started](docs/getting-started.md)
+- [CLI Reference](docs/cli.md)
+- [SDK Reference](docs/sdk.md)
+- [Runtime Model](docs/runtime-model.md)
+- [VS Code Extension](docs/vscode-extension.md)
+- [Browser Regression Spec](docs/browser-regression-spec.md)
+
+The common operator entrypoint is now `hypernote setup serve`, followed by
+`hypernote setup doctor` when you need to confirm server and kernelspec state.
 
 Public docs should describe shipped behavior only. Internal implementation notes belong in `dev/`.

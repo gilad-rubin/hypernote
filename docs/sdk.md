@@ -53,6 +53,8 @@ nb = hypernote.connect("tmp/demo.ipynb", create=True)
 - `stop()`
 
 `Runtime` reflects live notebook-scoped control-plane state. It is not durable across runtime stop or server restart.
+`Runtime.ensure()` reopens against the notebook's current metadata kernelspec unless the caller
+explicitly requests another kernel.
 
 ### `Job`
 
@@ -64,6 +66,8 @@ nb = hypernote.connect("tmp/demo.ipynb", create=True)
 - `send_stdin(...)`
 
 `Job` is a live coordination handle backed by Hypernote's in-memory ledger. It is intended for current execution flow and recent status, not long-term history.
+`Job.wait(timeout=...)` raises `ExecutionTimeoutError` with the job id, last known status, and
+CLI recovery hints for `job get` and `cat`.
 
 ## Observation model
 
