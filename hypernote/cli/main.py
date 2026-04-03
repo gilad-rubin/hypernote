@@ -635,7 +635,7 @@ def create_cmd(
     human_flag: bool,
 ) -> None:
     notebook = _sdk_notebook(ctx, path, create=True)
-    if empty:
+    if empty and getattr(notebook, "_was_created", False):
         for cell in list(notebook.cells):
             cell.delete()
     status = notebook.status()
@@ -1490,8 +1490,8 @@ def setup_doctor_cmd(ctx: click.Context, path: str | None) -> None:
             launcher = _kernelspec_launcher(default_spec)
             if launcher is not None:
                 report["default_kernel"] = launcher
-        except Exception:  # pragma: no cover - best-effort enrichment
-            pass
+        except Exception as exc:  # pragma: no cover - best-effort enrichment
+            report["default_kernel_error"] = str(exc)
 
     if path and report.get("hypernote_api") == "ok":
         report["path"] = path

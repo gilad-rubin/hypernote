@@ -6,14 +6,14 @@ Public workflow docs live in `docs/`. This folder is for implementation-facing n
 
 Read these first:
 
-- [Current Architecture](dev/current-architecture.md)
-- [Module Map](dev/module-map.md)
-- [Testing and Verification](dev/testing-and-verification.md)
-- [VS Code Extension Notes](dev/vscode-extension.md)
+- [Current Architecture](current-architecture.md)
+- [Module Map](module-map.md)
+- [Testing and Verification](testing-and-verification.md)
+- [VS Code Extension Notes](vscode-extension.md)
 
 Release path:
 
-- pushing a tag like `v0.1.2` runs [release.yml](.github/workflows/release.yml)
+- pushing a tag like `v0.1.2` runs [release.yml](../.github/workflows/release.yml)
 - the workflow verifies the tag matches `pyproject.toml`, builds `dist/`, creates or updates the GitHub release with `gh`, and publishes to PyPI as `hypernote`
 - PyPI auth comes from the GitHub Actions secret `PYPI_API_TOKEN`
 

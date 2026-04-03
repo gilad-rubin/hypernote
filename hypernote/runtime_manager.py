@@ -127,13 +127,14 @@ class RuntimeManager:
         existing = await self._load_or_refresh_room(notebook_id)
         if existing is not None and existing.is_live:
             if (
-                existing.kernel_name is not None
-                and existing.kernel_name != desired_kernel_name
+                kernel_name is not None
+                and existing.kernel_name is not None
+                and existing.kernel_name != kernel_name
             ):
                 raise RuntimeKernelMismatchError(
                     notebook_id,
                     active_kernel_name=existing.kernel_name,
-                    requested_kernel_name=desired_kernel_name,
+                    requested_kernel_name=kernel_name,
                 )
             self.touch_activity(existing.room_id)
             return existing

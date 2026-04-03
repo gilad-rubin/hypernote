@@ -114,6 +114,15 @@ async def test_ensure_room_rejects_live_kernel_mismatch(manager: RuntimeManager)
         await manager.ensure_room("nb-1.ipynb", kernel_name="other-kernel")
 
 
+async def test_ensure_room_none_kernel_reuses_existing_without_mismatch(
+    manager: RuntimeManager,
+):
+    await manager.ensure_room("nb-1.ipynb", kernel_name="custom-kernel")
+    # Internal callers omit kernel_name — must not raise even for non-python3 rooms
+    room = await manager.ensure_room("nb-1.ipynb", kernel_name=None)
+    assert room is not None
+
+
 async def test_detach_transitions_to_live_detached(manager: RuntimeManager):
     room = await manager.open_runtime("nb-1.ipynb", "client-a")
     await manager.detach_client(room.room_id, "client-a")

@@ -50,6 +50,9 @@ available. The default address is `http://127.0.0.1:8888`.
 different repo's `.venv`), stop the old server and start a new one with `setup serve`
 from this repo. This is the only case where you should restart a running server.
 
+To stop the server: press `Ctrl+C` in the terminal where `setup serve` is running, or
+if it's backgrounded, find its pid with `lsof -ti :8888` and kill it.
+
 **If port 8888 is taken**, use a different port and point all commands at it:
 
 ```bash
@@ -71,7 +74,7 @@ uv run hypernote status tmp/demo.ipynb --full
 
 The normal way to build and run a notebook is one cell at a time:
 
-```
+```text
 ix  →  read output  →  decide next cell  →  ix  →  repeat
 ```
 

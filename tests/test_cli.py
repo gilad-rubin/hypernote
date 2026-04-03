@@ -308,8 +308,10 @@ def fake_notebooks(monkeypatch):
     def factory(path: str, create: bool = False, **kwargs):  # noqa: ARG001
         if path not in notebooks and not create:
             raise cli_main.NotebookNotFoundError(path)
-        notebooks.setdefault(path, FakeNotebook(path))
-        return notebooks[path]
+        was_created = path not in notebooks
+        nb = notebooks.setdefault(path, FakeNotebook(path))
+        nb._was_created = was_created
+        return nb
 
     monkeypatch.setattr(cli_main, "connect", factory)
     return notebooks
@@ -414,15 +416,27 @@ def test_ix_stream_json_emits_events(runner, fake_notebooks, monkeypatch):
     assert "job_completed" in event_names
 
 
-def test_create_empty_removes_default_cells(runner, fake_notebooks, monkeypatch):
+def test_create_empty_removes_default_cells_on_new_notebook(runner, fake_notebooks, monkeypatch):
     monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
-    nb = fake_notebooks.setdefault("new.ipynb", FakeNotebook("new.ipynb"))
-    nb.cells.insert_code("", id="default-blank")
-
+    # Notebook does not exist yet — factory will mark _was_created=True
     result = runner.invoke(cli, ["create", "new.ipynb", "--empty"])
+    nb = fake_notebooks["new.ipynb"]
 
     assert result.exit_code == 0
     assert len(nb._order) == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "create"
+
+
+def test_create_empty_preserves_cells_on_existing_notebook(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("existing.ipynb", FakeNotebook("existing.ipynb"))
+    nb.cells.insert_code("print(1)", id="existing-cell")
+
+    result = runner.invoke(cli, ["create", "existing.ipynb", "--empty"])
+
+    assert result.exit_code == 0
+    assert len(nb._order) == 1  # cells NOT deleted on existing notebook
     payload = json.loads(result.output)
     assert payload["command"] == "create"
 

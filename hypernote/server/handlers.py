@@ -328,11 +328,11 @@ class RuntimeOpenHandler(BaseHypernoteHandler):
         body = self.get_json_body()
         client_id = body.get("client_id", "api-client")
         orch = await self.get_orch()
-        kernel_name = await orch.resolve_kernel_name(
-            notebook_id,
-            explicit_kernel_name=body.get("kernel_name"),
-        )
         try:
+            kernel_name = await orch.resolve_kernel_name(
+                notebook_id,
+                explicit_kernel_name=body.get("kernel_name"),
+            )
             room = await orch.runtime_manager.open_runtime(
                 notebook_id,
                 client_id,
