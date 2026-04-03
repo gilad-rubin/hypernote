@@ -26,6 +26,17 @@ Hypernote-owned control-plane state is intentionally ephemeral:
 
 Notebook contents and outputs still persist because Jupyter owns the `.ipynb` document.
 
+## Kernel selection
+
+Runtime creation resolves the desired kernel in this order:
+
+1. explicit kernel override from the caller
+2. notebook metadata `kernelspec.name`
+3. `"python3"`
+
+If a runtime is already live and the notebook later points at a different kernelspec,
+Hypernote rejects silent reuse. Stop or restart the runtime to pick up the new kernel.
+
 ## Invariants
 
 - notebook edits and execution must use one logical document truth

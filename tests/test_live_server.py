@@ -13,6 +13,7 @@ from tests.helpers import (
     code_cell,
     collect_stream_text,
     create_notebook,
+    notebook_model,
     wait_for_sdk_output,
 )
 
@@ -47,6 +48,29 @@ async def test_execute_persists_output(
     cells = model.json()["content"]["cells"]
     outputs = cells[0]["outputs"]
     assert outputs, "Expected outputs to be persisted into the notebook"
+
+
+async def test_execute_honors_notebook_kernelspec_instead_of_defaulting(
+    hypernote_api,
+    jupyter_api,
+):
+    notebook = f"hypernote-live-missing-kernel-{asyncio.get_running_loop().time():.6f}.ipynb"
+    model = notebook_model(code_cell("cell-a", "print('should not run')"))
+    model["content"]["metadata"]["kernelspec"] = {
+        "display_name": "Missing Kernel",
+        "name": "missing-kernel",
+    }
+    response = await jupyter_api.put(f"/api/contents/{urllib.parse.quote(notebook)}", json=model)
+    response.raise_for_status()
+
+    quoted = urllib.parse.quote(notebook, safe="")
+    execute = await hypernote_api.post(
+        f"/notebooks/{quoted}/execute",
+        json={"cell_ids": ["cell-a"]},
+    )
+
+    assert execute.status_code >= 400
+    assert "missing-kernel" in execute.text
 
 
 async def test_stdin_roundtrip(hypernote_api, jupyter_api):

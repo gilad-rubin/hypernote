@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
+import subprocess
 import sys
 import time
+import urllib.parse
 from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
@@ -30,7 +33,7 @@ from hypernote import (
     RuntimeUnavailableError,
     connect,
 )
-from hypernote.sdk import _Config, _control_plane
+from hypernote.sdk import _Config, _control_plane, _job_timeout_message
 
 TERMINAL_STATUSES = {
     JobStatus.SUCCEEDED,
@@ -39,6 +42,9 @@ TERMINAL_STATUSES = {
     JobStatus.AWAITING_INPUT,
 }
 PROGRESS_CHOICES = click.Choice(["quiet", "events", "full"])
+HYPERNOTE_EXTENSION_FLAGS = (
+    "{'hypernote': True, 'jupyter_server_nbmodel': True, 'jupyter_server_ydoc': True}"
+)
 
 
 @dataclass(frozen=True)
@@ -88,6 +94,51 @@ def _echo_json(data: Any, *, pretty: bool = False) -> None:
 
 def _ctx_config(ctx: click.Context) -> CLIConfig:
     return ctx.obj["config"]
+
+
+def _server_host_port(server: str) -> tuple[str, int]:
+    parsed = urllib.parse.urlparse(server)
+    host = parsed.hostname or "127.0.0.1"
+    if parsed.port is not None:
+        return host, parsed.port
+    if parsed.scheme == "https":
+        return host, 443
+    return host, 8888
+
+
+def _require_jupyterlab() -> None:
+    if importlib.util.find_spec("jupyterlab") is not None:
+        return
+    raise click.ClickException(
+        "jupyterlab is not installed in this Python environment. "
+        "Install it in the target repo env, then rerun `hypernote setup serve`."
+    )
+
+
+def _serve_command(
+    *,
+    root: Path,
+    host: str,
+    port: int,
+    token: str,
+    no_browser: bool,
+) -> list[str]:
+    cmd = [sys.executable, "-m", "jupyterlab"]
+    if no_browser:
+        cmd.append("--no-browser")
+    cmd.extend(
+        [
+            f"--ServerApp.ip={host}",
+            f"--ServerApp.port={port}",
+            "--ServerApp.port_retries=0",
+            f"--ServerApp.token={token}",
+            "--ServerApp.password=",
+            "--ServerApp.disable_check_xsrf=True",
+            f"--ServerApp.root_dir={root}",
+            f"--ServerApp.jpserver_extensions={HYPERNOTE_EXTENSION_FLAGS}",
+        ]
+    )
+    return cmd
 
 
 def _sdk_notebook(ctx: click.Context, path: str, *, create: bool = False) -> Notebook:
@@ -266,6 +317,31 @@ def _event(
     return payload
 
 
+def _halt_reason(status: JobStatus | None) -> str | None:
+    if status == JobStatus.FAILED:
+        return "job_failed"
+    if status == JobStatus.INTERRUPTED:
+        return "job_interrupted"
+    if status == JobStatus.AWAITING_INPUT:
+        return "awaiting_input"
+    return None
+
+
+def _kernelspec_name_from_document(model: dict[str, Any]) -> str:
+    content = model.get("content", {})
+    metadata = content.get("metadata", {})
+    kernelspec = metadata.get("kernelspec", {})
+    return str(kernelspec.get("name") or "python3")
+
+
+def _kernelspec_launcher(kernelspec: dict[str, Any]) -> str | None:
+    spec = kernelspec.get("spec", {})
+    argv = spec.get("argv", [])
+    if not argv:
+        return None
+    return str(argv[0])
+
+
 def _emit_stream_json(payload: dict[str, Any]) -> None:
     click.echo(_compact_json(payload))
 
@@ -389,7 +465,7 @@ def _watch_job(
             return job
 
         if deadline is not None and time.monotonic() >= deadline:
-            raise ExecutionTimeoutError(f"Timed out waiting for job {job.id}")
+            raise ExecutionTimeoutError(_job_timeout_message(job))
         time.sleep(0.25)
 
 
@@ -544,6 +620,7 @@ def cli(
 
 @cli.command("create")
 @click.argument("path")
+@click.option("--empty", is_flag=True, help="Remove any default cells Jupyter auto-inserts")
 @click.option("--json", "json_flag", is_flag=True, help="Force compact JSON output")
 @click.option("--pretty", is_flag=True, help="Pretty-print JSON output")
 @click.option("--human", "human_flag", is_flag=True, help="Force human-readable output")
@@ -552,11 +629,15 @@ def cli(
 def create_cmd(
     ctx: click.Context,
     path: str,
+    empty: bool,
     json_flag: bool,
     pretty: bool,
     human_flag: bool,
 ) -> None:
     notebook = _sdk_notebook(ctx, path, create=True)
+    if empty and getattr(notebook, "_was_created", False):
+        for cell in list(notebook.cells):
+            cell.delete()
     status = notebook.status()
     payload = {
         "command": "create",
@@ -749,6 +830,8 @@ def ix_cmd(
     current_before = before
     current_after = after
     final_job: Job | None = None
+    halted_early = False
+    halt_reason: str | None = None
 
     for index, cell_spec in enumerate(cells):
         inserted = _insert_cell(
@@ -780,6 +863,8 @@ def ix_cmd(
                 timeout=timeout,
             )
             if job.status in {JobStatus.FAILED, JobStatus.INTERRUPTED, JobStatus.AWAITING_INPUT}:
+                halted_early = index < len(cells) - 1
+                halt_reason = _halt_reason(job.status) if halted_early else None
                 break
 
     if len(cells) > 1:
@@ -789,6 +874,8 @@ def ix_cmd(
             "status": "error"
             if final_job and final_job.status in {JobStatus.FAILED, JobStatus.INTERRUPTED}
             else "ok",
+            "cells_inserted": len(inserted_cells),
+            "cells_total": len(cells),
             "results": [
                 {
                     "cell_id": cell.id,
@@ -799,6 +886,10 @@ def ix_cmd(
                 for cell in inserted_cells
             ],
         }
+        if halted_early and halt_reason is not None and inserted_cells:
+            payload["halt_reason"] = halt_reason
+            payload["last_processed_cell_id"] = inserted_cells[-1].id
+            payload["cells_remaining"] = len(cells) - len(inserted_cells)
         _echo_json(payload, pretty=pretty or _stdout_is_tty())
         return
 
@@ -1327,16 +1418,107 @@ def setup_group() -> None:
     """Operator diagnostics."""
 
 
-@setup_group.command("doctor")
+@setup_group.command("serve")
+@click.option(
+    "--root",
+    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+    default=Path.cwd,
+    show_default="current working directory",
+    help="Repo root to expose through Jupyter",
+)
+@click.option("--host", help="Server host. Defaults to the host from --server.")
+@click.option("--port", type=int, help="Server port. Defaults to the port from --server.")
+@click.option(
+    "--browser/--no-browser",
+    default=False,
+    show_default=True,
+    help="Whether to open a browser tab",
+)
 @click.pass_context
 @_cli_errors
-def setup_doctor_cmd(ctx: click.Context) -> None:
+def setup_serve_cmd(
+    ctx: click.Context,
+    root: Path,
+    host: str | None,
+    port: int | None,
+    browser: bool,
+) -> None:
+    _require_jupyterlab()
+    cfg = _ctx_config(ctx)
+    default_host, default_port = _server_host_port(cfg.server)
+    resolved_root = root.resolve()
+    if not resolved_root.exists():
+        raise click.ClickException(f"Root directory does not exist: {resolved_root}")
+
+    serve_host = host or default_host
+    serve_port = port or default_port
+    token = cfg.token or ""
+    cmd = _serve_command(
+        root=resolved_root,
+        host=serve_host,
+        port=serve_port,
+        token=token,
+        no_browser=not browser,
+    )
+    url = f"http://{serve_host}:{serve_port}"
+    click.echo(f"Starting Hypernote Jupyter server at {url}")
+    click.echo(f"Root: {resolved_root}")
+    click.echo("Extensions: hypernote, jupyter_server_nbmodel, jupyter_server_ydoc")
+    completed = subprocess.run(cmd, cwd=str(resolved_root), check=False)
+    if completed.returncode != 0:
+        raise SystemExit(completed.returncode)
+
+
+@setup_group.command("doctor")
+@click.option("--path", help="Notebook path to inspect against the live server")
+@click.pass_context
+@_cli_errors
+def setup_doctor_cmd(ctx: click.Context, path: str | None) -> None:
     cfg = _ctx_config(ctx)
     report: dict[str, object] = {"server": cfg.server, "hypernote_api": "unreachable"}
+    control = _sdk_control(ctx)
     try:
-        _sdk_control(ctx).list_jobs()
+        control.list_jobs()
         report["hypernote_api"] = "ok"
         report["jobs_endpoint"] = True
     except Exception as exc:  # pragma: no cover - exercised via CLI output
         report["error"] = str(exc)
+
+    if report.get("hypernote_api") == "ok":
+        try:
+            default_spec = control.get_kernelspec("python3")
+            launcher = _kernelspec_launcher(default_spec)
+            if launcher is not None:
+                report["default_kernel"] = launcher
+        except Exception as exc:  # pragma: no cover - best-effort enrichment
+            report["default_kernel_error"] = str(exc)
+
+    if path and report.get("hypernote_api") == "ok":
+        report["path"] = path
+        try:
+            document = control.get_notebook_document(path, content=True)
+            notebook_kernel = _kernelspec_name_from_document(document)
+            report["notebook_kernelspec"] = notebook_kernel
+
+            runtime = control.get_runtime_status(path)
+            report["runtime_state"] = runtime.get("state")
+            report["runtime_kernel_name"] = runtime.get("kernel_name")
+
+            try:
+                kernelspec = control.get_kernelspec(notebook_kernel)
+            except Exception as exc:  # pragma: no cover - networked failure surface
+                report["kernelspec_error"] = str(exc)
+            else:
+                launcher = _kernelspec_launcher(kernelspec)
+                if launcher is not None:
+                    report["kernelspec_launcher"] = launcher
+
+            runtime_kernel = runtime.get("kernel_name")
+            if runtime_kernel and runtime_kernel != notebook_kernel:
+                report["warnings"] = [
+                    "Live runtime kernel does not match notebook metadata. "
+                    "Stop or restart the runtime to pick up the notebook's kernelspec."
+                ]
+        except Exception as exc:
+            report["path_error"] = str(exc)
     _echo_json(report, pretty=_stdout_is_tty())

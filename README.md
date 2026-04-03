@@ -10,6 +10,7 @@
 - notebook-first SDK in `hypernote/sdk.py`
 - agent-first CLI in `hypernote/cli/main.py`
 - Jupyter server extension for execution and runtime control
+- experimental VS Code extension in `vscode-extension/` for embedding JupyterLab in VS Code
 - notebook-scoped runtime lifecycle with attach, detach, recovery, and stop
 - job polling and `input()` round-trips for headless execution
 - live-server and browser regression coverage for shared-document behavior
@@ -19,10 +20,15 @@
 ```bash
 uv sync
 uv run hypernote --help
+uv run hypernote setup serve
+uv run hypernote setup doctor
 uv run hypernote create tmp/demo.ipynb
 uv run hypernote ix tmp/demo.ipynb -s 'value = 20 + 22\nprint(value)'
 uv run hypernote status tmp/demo.ipynb --full
 ```
+
+For another repo's environment, install Hypernote there (`uv add hypernote --dev`) and run
+the same bootstrap command from that repo.
 
 ## Install tiers
 
@@ -62,10 +68,20 @@ Hypernote owns:
 
 ## Documentation
 
-- [Getting Started](/Users/giladrubin/python_workspace/hypernote/docs/getting-started.md)
-- [CLI Reference](/Users/giladrubin/python_workspace/hypernote/docs/cli.md)
-- [SDK Reference](/Users/giladrubin/python_workspace/hypernote/docs/sdk.md)
-- [Runtime Model](/Users/giladrubin/python_workspace/hypernote/docs/runtime-model.md)
+- [Getting Started](docs/getting-started.md)
+- [CLI Reference](docs/cli.md)
+- [SDK Reference](docs/sdk.md)
+- [Runtime Model](docs/runtime-model.md)
+- [VS Code Extension](docs/vscode-extension.md)
+
+## VS Code
+
+The repository now includes a minimal VS Code extension under `vscode-extension/`.
+
+- It embeds JupyterLab inside a VS Code custom editor or panel.
+- It can reuse an existing Jupyter server via settings.
+- If no server is reachable, it can start a managed local `jupyter lab` process.
+- It stays decoupled from Hypernote-specific UI so Hypernote can connect to the same server separately.
 
 ## Verification
 
@@ -78,4 +94,12 @@ uv sync --extra dev
 ```bash
 uv run ruff check hypernote tests
 uv run python -m pytest -q
+```
+
+Extension build:
+
+```bash
+cd vscode-extension
+npm install
+npm run compile
 ```

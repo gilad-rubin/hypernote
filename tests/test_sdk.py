@@ -6,6 +6,7 @@ import json
 import urllib.parse
 
 import httpx
+import pytest
 
 import hypernote
 from hypernote import (
@@ -245,6 +246,33 @@ def test_cell_run_runtime_and_restart():
 
     restarted = nb.restart()
     assert restarted.status == RuntimeStatus.LIVE_ATTACHED
+
+
+def test_job_wait_timeout_surfaces_recovery_hint():
+    state, transport = _make_transport()
+    nb = hypernote.connect("tmp/sdk.ipynb", create=True, server="http://test", transport=transport)
+    nb.cells.insert_code("print(42)", id="hello-cell")
+    state["jobs"]["job-timeout"] = {
+        "job_id": "job-timeout",
+        "status": "running",
+        "target_cells": json.dumps(["hello-cell"]),
+    }
+
+    job = hypernote.Job(
+        notebook=nb,
+        id="job-timeout",
+        status=JobStatus.RUNNING,
+        cell_ids=("hello-cell",),
+        notebook_path=nb.path,
+    )
+
+    with pytest.raises(hypernote.ExecutionTimeoutError, match="job-timeout") as excinfo:
+        job.wait(timeout=0)
+
+    message = str(excinfo.value)
+    assert "last status: running" in message
+    assert "hypernote job get job-timeout" in message
+    assert "hypernote cat tmp/sdk.ipynb --no-outputs" in message
 
 
 def test_status_and_diff():

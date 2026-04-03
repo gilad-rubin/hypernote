@@ -125,6 +125,12 @@ class SharedNotebookAccessor:
                 return cell
         raise ValueError(f"Cell {cell_id} not found in notebook {notebook_id}")
 
+    async def get_kernelspec_name(self, notebook_id: str) -> str:
+        model = await self.get_notebook_model(notebook_id, content=True)
+        metadata = model.get("content", {}).get("metadata", {})
+        kernelspec = metadata.get("kernelspec", {})
+        return str(kernelspec.get("name") or "python3")
+
     async def insert_cell(
         self,
         notebook_id: str,
@@ -352,8 +358,17 @@ class ExecutionOrchestrator:
         cell_ids: list[str],
         actor_id: str,
         actor_type: ActorType,
+        *,
+        kernel_name: str | None = None,
     ) -> Job:
-        room = await self._runtime_mgr.ensure_room(notebook_id)
+        desired_kernel_name = await self.resolve_kernel_name(
+            notebook_id,
+            explicit_kernel_name=kernel_name,
+        )
+        room = await self._runtime_mgr.ensure_room(
+            notebook_id,
+            kernel_name=desired_kernel_name,
+        )
         job = await self._ledger.create_job(
             notebook_id=notebook_id,
             actor_id=actor_id,
@@ -518,6 +533,16 @@ class ExecutionOrchestrator:
 
     async def get_runtime_status(self, notebook_id: str) -> dict[str, Any]:
         return await self._runtime_mgr.get_runtime_status(notebook_id)
+
+    async def resolve_kernel_name(
+        self,
+        notebook_id: str,
+        *,
+        explicit_kernel_name: str | None = None,
+    ) -> str:
+        if explicit_kernel_name:
+            return explicit_kernel_name
+        return await self._notebook.get_kernelspec_name(notebook_id)
 
     async def _ensure_kernel_client_ready(self, kernel_id: str) -> None:
         get_client = getattr(self._stack, "_get_client", None)
