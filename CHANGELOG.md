@@ -9,6 +9,10 @@ All notable changes to this project will be documented in this file.
 - added a minimal VS Code extension under `vscode-extension/` that opens JupyterLab in a VS Code custom editor or panel
 - added managed local JupyterLab startup for the extension when no configured server is reachable
 
+### Changed
+
+- release workflow switched from tag-triggered to `workflow_dispatch` — run `gh workflow run release.yml -f version=X.Y.Z` to release
+
 ### Notes
 
 - the extension is intentionally decoupled from Hypernote-specific UI and connects to plain JupyterLab

@@ -13,9 +13,10 @@ Read these first:
 
 Release path:
 
-- pushing a tag like `v0.1.2` runs [release.yml](../.github/workflows/release.yml)
-- the workflow verifies the tag matches `pyproject.toml`, builds `dist/`, creates or updates the GitHub release with `gh`, and publishes to PyPI as `hypernote`
+- trigger the release workflow from GitHub Actions UI or `gh workflow run release.yml -f version=X.Y.Z`
+- the workflow bumps `pyproject.toml`, syncs `uv.lock`, commits, tags, builds, tests, creates a GitHub release, and publishes to PyPI
 - PyPI auth comes from the GitHub Actions secret `PYPI_API_TOKEN`
+- see [release.yml](../.github/workflows/release.yml)
 
 Rules:
 
