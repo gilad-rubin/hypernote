@@ -9,6 +9,7 @@ Read these first:
 - [Current Architecture](current-architecture.md)
 - [Module Map](module-map.md)
 - [Testing and Verification](testing-and-verification.md)
+- [CLI Agent Ergonomics Rollout](cli-agent-ergonomics-rollout.md)
 - [VS Code Extension Notes](vscode-extension.md)
 
 Release path:

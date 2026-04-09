@@ -11,7 +11,7 @@ import time
 import urllib.parse
 from dataclasses import asdict, dataclass
 from enum import Enum
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 import httpx
 
@@ -26,6 +26,7 @@ from hypernote.errors import (
 
 SUMMARY_SOURCE_CHARS = 120
 SUMMARY_OUTPUT_TEXT_CHARS = 80
+DEFAULT_READ_OUTPUT_CHARS = 400
 
 
 class CellType(str, Enum):
@@ -93,6 +94,109 @@ class CellStatus:
             "execution_count": self.execution_count,
         }
 
+    def has_error_output(self) -> bool:
+        return _has_error_output(self.outputs or ())
+
+    def source_preview(
+        self,
+        *,
+        full: bool = False,
+        limit: int = SUMMARY_SOURCE_CHARS,
+    ) -> dict[str, Any]:
+        return _render_text_preview(self.source, limit=limit, full=full)
+
+    def output_preview(
+        self,
+        *,
+        max_chars: int = DEFAULT_READ_OUTPUT_CHARS,
+        full_output: bool = False,
+    ) -> dict[str, Any] | None:
+        return _cell_output_preview(
+            self.outputs or (),
+            max_chars=max_chars,
+            full_output=full_output,
+        )
+
+    def compact_dict(
+        self,
+        *,
+        full_source: bool = False,
+        include_outputs: bool = False,
+        full_output: bool = False,
+        max_output_chars: int = DEFAULT_READ_OUTPUT_CHARS,
+    ) -> dict[str, Any]:
+        outputs = list(self.outputs or ())
+        source_preview = self.source_preview(full=full_source)
+        entry: dict[str, Any] = {
+            "id": self.id,
+            "type": self.type.value,
+            "execution_count": self.execution_count,
+            "output_count": len(outputs),
+            "has_error_output": self.has_error_output(),
+            "source_preview": source_preview["text"],
+        }
+        if source_preview.get("truncated"):
+            entry["source_truncated"] = True
+            entry["source_total_chars"] = source_preview["total_chars"]
+            entry["source_hint"] = "truncated, use --full to see complete source"
+        if full_source:
+            entry["source"] = self.source
+        preview = self.output_preview(
+            max_chars=max_output_chars,
+            full_output=full_output,
+        )
+        if preview is not None:
+            entry["output_preview"] = preview["text"]
+            if preview.get("truncated"):
+                entry["output_truncated"] = True
+                entry["output_total_chars"] = preview["total_chars"]
+                if preview.get("hint"):
+                    entry["output_hint"] = preview["hint"]
+        if self.change_kinds:
+            entry["change_kinds"] = [kind.value for kind in self.change_kinds]
+        if include_outputs:
+            entry["outputs"] = [
+                _summarize_output(
+                    output,
+                    max_chars=max_output_chars,
+                    full_output=full_output,
+                )
+                for output in outputs
+            ]
+        return entry
+
+    def output_payload(
+        self,
+        *,
+        max_chars: int = DEFAULT_READ_OUTPUT_CHARS,
+        full_output: bool = False,
+        tail: bool = False,
+    ) -> dict[str, Any]:
+        outputs = list(self.outputs or ())
+        payload: dict[str, Any] = {
+            "cell_id": self.id,
+            "output_count": len(outputs),
+            "outputs": [
+                _summarize_output(
+                    output,
+                    max_chars=max_chars,
+                    full_output=full_output,
+                )
+                for output in outputs
+            ],
+        }
+        if tail and outputs:
+            tail_preview = _render_text_preview(
+                _output_text(outputs[-1]),
+                limit=max_chars,
+                full=full_output,
+            )
+            payload["tail_output"] = tail_preview["text"]
+            if tail_preview.get("truncated"):
+                payload["tail_output_truncated"] = True
+                payload["tail_output_total_chars"] = tail_preview["total_chars"]
+        return payload
+
 
 @dataclass(frozen=True)
 class NotebookStatus:
@@ -112,6 +216,74 @@ class NotebookStatus:
             "cells": [cell.to_dict() for cell in self.cells],
             "summary": self.summary,
         }
+
+    def aggregates(self) -> dict[str, Any]:
+        return _status_aggregates(self)
+
+    def compact_cells(
+        self,
+        *,
+        full_source: bool = False,
+        include_outputs: bool = False,
+        full_output: bool = False,
+        failed_only: bool = False,
+        query: str | None = None,
+        max_output_chars: int = DEFAULT_READ_OUTPUT_CHARS,
+    ) -> list[dict[str, Any]]:
+        cells: list[dict[str, Any]] = []
+        for cell in self.cells:
+            if failed_only and not cell.has_error_output():
+                continue
+            preview = cell.compact_dict(
+                full_source=full_source,
+                include_outputs=include_outputs,
+                full_output=full_output,
+                max_output_chars=max_output_chars,
+            )
+            if not _matches_query(
+                query=query,
+                text_parts=[
+                    cell.source,
+                    preview.get("output_preview"),
+                    cell.id,
+                ],
+            ):
+                continue
+            cells.append(preview)
+        return cells
+
+    def compact_dict(
+        self,
+        *,
+        full_source: bool = False,
+        include_outputs: bool = False,
+        full_output: bool = False,
+        failed_only: bool = False,
+        query: str | None = None,
+        max_output_chars: int = DEFAULT_READ_OUTPUT_CHARS,
+        include_details: bool = False,
+    ) -> dict[str, Any]:
+        payload = {
+            **self.aggregates(),
+            "filters": {"failed_only": failed_only, "query": query},
+            "cells": self.compact_cells(
+                full_source=full_source,
+                include_outputs=include_outputs,
+                full_output=full_output,
+                failed_only=failed_only,
+                query=query,
+                max_output_chars=max_output_chars,
+            ),
+        }
+        if include_details:
+            payload["details"] = self.to_dict()
+        return payload
+
+    def cell(self, cell_id: str) -> CellStatus:
+        for cell in self.cells:
+            if cell.id == cell_id:
+                return cell
+        raise CellNotFoundError(cell_id)
 
 
 @dataclass(frozen=True)
@@ -922,6 +1094,60 @@ def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def _normalize_preview_text(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _truncate_text(
+    value: str | None,
+    *,
+    limit: int,
+    full: bool = False,
+) -> tuple[str | None, dict[str, Any] | None]:
+    if value is None:
+        return None, None
+    normalized = _normalize_preview_text(value)
+    if full or limit <= 0 or len(normalized) <= limit:
+        return normalized, None
+    truncated = normalized[: max(limit - 1, 0)].rstrip()
+    if truncated and len(normalized) > len(truncated):
+        truncated = f"{truncated}…"
+    return truncated, {"truncated": True, "total_chars": len(normalized)}
+
+
+def _render_text_preview(
+    value: str | None,
+    *,
+    limit: int,
+    full: bool = False,
+) -> dict[str, Any]:
+    text, truncation = _truncate_text(value, limit=limit, full=full)
+    payload: dict[str, Any] = {"text": text}
+    if truncation is not None:
+        payload.update(truncation)
+    return payload
+
+
+def _output_text(output: dict[str, Any]) -> str:
+    if output.get("output_type") == "stream":
+        return str(output.get("text", ""))
+    if output.get("output_type") == "error":
+        traceback = output.get("traceback") or ()
+        if traceback:
+            return "\n".join(str(line) for line in traceback)
+        return f"{output.get('ename', 'Error')}: {output.get('evalue', '')}".strip()
+    data = output.get("data")
+    if isinstance(data, dict):
+        if "text/plain" in data:
+            text_value = data["text/plain"]
+            if isinstance(text_value, list):
+                return "".join(str(part) for part in text_value)
+            return str(text_value)
+    if "text" in output:
+        return str(output["text"])
+    return _normalize_preview_text(json.dumps(output, default=str))
+
+
 def _build_cell_status(
     cell: dict[str, Any],
     *,
@@ -942,28 +1168,113 @@ def _build_cell_status(
     )
 
 
-def _summarize_output(output: dict[str, Any]) -> dict[str, Any]:
-    output_type = output.get("output_type", "unknown")
-    if output_type == "stream":
-        return {
-            "output_type": output_type,
-            "name": output.get("name"),
-            "text": _truncate(str(output.get("text", "")), SUMMARY_OUTPUT_TEXT_CHARS),
-        }
-    if output_type in {"display_data", "execute_result"}:
-        data = output.get("data", {})
-        return {
-            "output_type": output_type,
-            "data_keys": sorted(data.keys()),
-            "text": _truncate(str(data.get("text/plain", "")), SUMMARY_OUTPUT_TEXT_CHARS),
-        }
-    if output_type == "error":
-        return {
-            "output_type": output_type,
-            "ename": output.get("ename"),
-            "evalue": output.get("evalue"),
-        }
-    return {"output_type": output_type}
+def _summarize_output(
+    output: dict[str, Any],
+    *,
+    max_chars: int = SUMMARY_OUTPUT_TEXT_CHARS,
+    full_output: bool = False,
+) -> dict[str, Any]:
+    summary = {"output_type": output.get("output_type", "unknown")}
+    text_payload = _render_text_preview(_output_text(output), limit=max_chars, full=full_output)
+    summary["text"] = text_payload["text"]
+    if text_payload.get("truncated"):
+        summary["truncated"] = True
+        summary["total_chars"] = text_payload["total_chars"]
+        summary["hint"] = (
+            f"truncated, {text_payload['total_chars']} chars total; "
+            "use --full-output to see complete text"
+        )
+    if output.get("output_type") == "stream":
+        summary["name"] = output.get("name")
+    if output.get("output_type") == "error":
+        summary["ename"] = output.get("ename")
+        summary["evalue"] = output.get("evalue")
+    data = output.get("data")
+    if isinstance(data, dict):
+        summary["data_keys"] = sorted(data.keys())
+    return summary
+
+
+def _has_error_output(outputs: Iterable[dict[str, Any]]) -> bool:
+    return any(output.get("output_type") == "error" for output in outputs)
+
+
+def _cell_output_preview(
+    outputs: Iterable[dict[str, Any]],
+    *,
+    max_chars: int,
+    full_output: bool,
+) -> dict[str, Any] | None:
+    output_list = list(outputs)
+    if not output_list:
+        return None
+    return _summarize_output(
+        output_list[-1],
+        max_chars=max_chars,
+        full_output=full_output,
+    )
+
+
+def _matches_query(
+    *,
+    query: str | None,
+    text_parts: list[str | None],
+) -> bool:
+    if not query:
+        return True
+    query_lower = query.lower()
+    return any(query_lower in (part or "").lower() for part in text_parts)
+
+
+def _status_aggregates(status: NotebookStatus) -> dict[str, Any]:
+    code_cells = 0
+    markdown_cells = 0
+    raw_cells = 0
+    executed_cells = 0
+    failed_cells = 0
+    changed_cells = 0
+    output_cells = 0
+
+    for cell in status.cells:
+        if cell.type == CellType.CODE:
+            code_cells += 1
+        elif cell.type == CellType.MARKDOWN:
+            markdown_cells += 1
+        else:
+            raw_cells += 1
+        if cell.execution_count is not None:
+            executed_cells += 1
+        outputs = list(cell.outputs or ())
+        if outputs:
+            output_cells += 1
+        if cell.has_error_output():
+            failed_cells += 1
+        if cell.change_kinds:
+            changed_cells += 1
+
+    return {
+        "cells_total": len(status.cells),
+        "code_cells": code_cells,
+        "markdown_cells": markdown_cells,
+        "raw_cells": raw_cells,
+        "executed_cells": executed_cells,
+        "failed_cells": failed_cells,
+        "changed_cells": changed_cells,
+        "output_cells": output_cells,
+        "runtime_state": status.runtime.value,
+        "snapshot": status.current.token,
+        "summary": {
+            "headline": status.summary,
+            "cell_count": len(status.cells),
+            "code_cells": code_cells,
+            "markdown_cells": markdown_cells,
+            "raw_cells": raw_cells,
+            "executed_cells": executed_cells,
+            "failed_cells": failed_cells,
+            "output_count": output_cells,
+            "runtime_state": status.runtime.value,
+        },
+    }
 
 
 def _truncate(value: str, limit: int) -> str:

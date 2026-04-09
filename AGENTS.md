@@ -6,6 +6,7 @@ Notebook-first execution system built on top of Jupyter shared documents
 
 ```bash
 uv sync --extra dev
+uv run hypernote
 uv run hypernote --help
 uv run hypernote setup serve
 uv run hypernote setup doctor
@@ -52,6 +53,7 @@ Lifecycle rule: notebook contents and outputs persist through Jupyter's `.ipynb`
 
 ### CLI
 
+- `hypernote` — live workspace dashboard with hints
 - `create`
 - `ix`
 - `exec`
@@ -70,9 +72,11 @@ Lifecycle rule: notebook contents and outputs persist through Jupyter's `.ipynb`
 
 Default CLI contract:
 
+- bare `hypernote` shows live workspace state and next-step hints
 - TTY: concise human-readable progress
 - non-TTY: one compact final JSON result
 - explicit streaming only through `--watch` or `--stream-json`
+- summary-first read payloads should come from SDK-backed observation helpers, not CLI-only formatting rules
 - `setup serve` is the default local bootstrap path for a Hypernote-enabled Jupyter server
 - `setup doctor --path PATH` is the preferred first diagnostic when server reachability,
   kernelspec selection, or runtime mismatch is unclear
@@ -81,6 +85,7 @@ Default CLI contract:
 
 - Terminology: when the user says "our system", treat that as the maintained project-operating surface, including `AGENTS.md`, `SKILL.md`, `docs/`, `dev/`, tests, and other shared guidance or verification artifacts around the code.
 - SDK first. CLI behavior should come from the SDK, not duplicate raw HTTP semantics.
+- When CLI and SDK both need compact observation behavior, define the summary/truncation/focused-read logic in the SDK and let the CLI adapt it.
 - One truth. Do not reintroduce a contents-vs-YDoc split for notebook reads or writes.
 - Runtime creation must honor the requested kernel first, otherwise notebook metadata
   `kernelspec.name`, otherwise `python3`.
@@ -110,12 +115,16 @@ Default CLI contract:
 
 - preserve the notebook-first public object model
 - keep public enums and errors stable
+- prefer adding reusable observation helpers on `NotebookStatus` / `CellStatus` over adding CLI-only shaping logic
 - update [docs/sdk.md](docs/sdk.md)
 
 ### `hypernote/cli/main.py`
 
 - keep non-TTY output compact by default
+- keep bare `hypernote` as the live dashboard view
 - preserve `ix` as the happy-path command
+- preserve summary-first `status` and compact `cat` with contextual hints
+- prefer rendering SDK observation helpers over introducing new CLI-only data shaping
 - keep streaming explicit in non-TTY mode
 - update [docs/cli.md](docs/cli.md)
 
