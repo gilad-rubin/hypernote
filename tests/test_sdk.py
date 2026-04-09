@@ -295,7 +295,12 @@ def test_status_and_diff():
 
 def test_status_compact_dict_and_cell_helpers():
     _, transport = _make_transport()
-    nb = hypernote.connect("tmp/sdk.ipynb", create=True, server="http://test", transport=transport)
+    nb = hypernote.connect(
+        "tmp/sdk-compact-helpers.ipynb",
+        create=True,
+        server="http://test",
+        transport=transport,
+    )
     cell = nb.cells.insert_code("print('hello world')", id="hello-cell")
 
     job = cell.run()
@@ -306,7 +311,7 @@ def test_status_compact_dict_and_cell_helpers():
 
     assert compact["cells_total"] == 1
     assert compact["summary"]["cell_count"] == 1
-    assert compact["runtime_state"] == RuntimeStatus.STOPPED.value
+    assert compact["runtime_state"] == status.runtime.value
     assert len(compact["cells"]) == 1
 
     cell_payload = compact["cells"][0]

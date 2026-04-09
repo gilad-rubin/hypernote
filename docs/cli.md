@@ -91,7 +91,7 @@ Job and runtime commands are for the live notebook session. They should be treat
 - prefer `cat` for focused inspection and `status` for notebook health
 - prefer default non-TTY output for agents unless you truly need background observation
 - prefer `setup doctor` before assuming a server or extension problem
-- after a failed batch `ix`, prefer `cat --cell CELL_ID --output` or `cat --failed` and `exec` over rerunning the whole batch blindly
+- after a failed batch `ix`, prefer `cat --cell CELL_ID --output` or `status --failed` and `exec` over rerunning the whole batch blindly
 - keep `--help` as the explicit discovery path when the hints are not enough
 
 ## Serve bootstrap

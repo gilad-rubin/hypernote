@@ -236,210 +236,6 @@ def _snapshot_from_status(status: NotebookStatus) -> str:
     return status.current.token
 
 
-def _normalize_preview_text(value: str) -> str:
-    return " ".join(value.split())
-
-
-def _truncate_text(
-    value: str | None,
-    *,
-    limit: int,
-    full: bool = False,
-) -> tuple[str | None, dict[str, Any] | None]:
-    if value is None:
-        return None, None
-    normalized = _normalize_preview_text(value)
-    if full or limit <= 0 or len(normalized) <= limit:
-        return normalized, None
-    truncated = normalized[: max(limit - 1, 0)].rstrip()
-    if truncated and len(normalized) > len(truncated):
-        truncated = f"{truncated}…"
-    return truncated, {"truncated": True, "total_chars": len(normalized)}
-
-
-def _render_text_preview(
-    value: str | None,
-    *,
-    limit: int,
-    full: bool = False,
-) -> dict[str, Any]:
-    text, truncation = _truncate_text(value, limit=limit, full=full)
-    payload: dict[str, Any] = {"text": text}
-    if truncation is not None:
-        payload.update(truncation)
-    return payload
-
-
-def _output_text(output: dict[str, Any]) -> str:
-    if output.get("output_type") == "stream":
-        return str(output.get("text", ""))
-    if output.get("output_type") == "error":
-        traceback = output.get("traceback") or ()
-        if traceback:
-            return "\n".join(str(line) for line in traceback)
-        return f"{output.get('ename', 'Error')}: {output.get('evalue', '')}".strip()
-    data = output.get("data")
-    if isinstance(data, dict):
-        if "text/plain" in data:
-            text_value = data["text/plain"]
-            if isinstance(text_value, list):
-                return "".join(str(part) for part in text_value)
-            return str(text_value)
-    if "text" in output:
-        return str(output["text"])
-    return _normalize_preview_text(json.dumps(output, default=str))
-
-
-def _summarize_output(
-    output: dict[str, Any],
-    *,
-    max_chars: int,
-    full_output: bool,
-) -> dict[str, Any]:
-    summary = {"output_type": output.get("output_type", "unknown")}
-    text_payload = _render_text_preview(_output_text(output), limit=max_chars, full=full_output)
-    summary["text"] = text_payload["text"]
-    if text_payload.get("truncated"):
-        summary["truncated"] = True
-        summary["total_chars"] = text_payload["total_chars"]
-        summary["hint"] = (
-            f"truncated, {text_payload['total_chars']} chars total; "
-            "use --full-output to see complete text"
-        )
-    if output.get("output_type") == "error":
-        summary["ename"] = output.get("ename")
-        summary["evalue"] = output.get("evalue")
-    return summary
-
-
-def _has_error_output(outputs: Iterable[dict[str, Any]]) -> bool:
-    return any(output.get("output_type") == "error" for output in outputs)
-
-
-def _cell_output_count(outputs: Iterable[dict[str, Any]]) -> int:
-    return sum(1 for _ in outputs)
-
-
-def _cell_source_preview(source: str | None, *, full: bool = False) -> dict[str, Any]:
-    return _render_text_preview(source, limit=DEFAULT_SOURCE_PREVIEW_CHARS, full=full)
-
-
-def _cell_output_preview(
-    outputs: Iterable[dict[str, Any]],
-    *,
-    max_chars: int,
-    full_output: bool,
-) -> dict[str, Any] | None:
-    outputs = list(outputs)
-    if not outputs:
-        return None
-    return _summarize_output(outputs[-1], max_chars=max_chars, full_output=full_output)
-
-
-def _matches_query(*, query: str | None, text_parts: Iterable[str | None]) -> bool:
-    if not query:
-        return True
-    query_lower = query.lower()
-    return any(query_lower in (part or "").lower() for part in text_parts)
-
-
-def _status_aggregates(status: NotebookStatus) -> dict[str, Any]:
-    code_cells = 0
-    markdown_cells = 0
-    raw_cells = 0
-    executed_cells = 0
-    failed_cells = 0
-    changed_cells = 0
-    output_cells = 0
-
-    for cell in status.cells:
-        if cell.type == CellType.CODE:
-            code_cells += 1
-        elif cell.type == CellType.MARKDOWN:
-            markdown_cells += 1
-        else:
-            raw_cells += 1
-        if cell.execution_count is not None:
-            executed_cells += 1
-        outputs = list(cell.outputs or ())
-        if outputs:
-            output_cells += 1
-        if _has_error_output(outputs):
-            failed_cells += 1
-        if cell.change_kinds:
-            changed_cells += 1
-
-    return {
-        "cells_total": len(status.cells),
-        "code_cells": code_cells,
-        "markdown_cells": markdown_cells,
-        "raw_cells": raw_cells,
-        "executed_cells": executed_cells,
-        "failed_cells": failed_cells,
-        "changed_cells": changed_cells,
-        "output_cells": output_cells,
-        "runtime_state": status.runtime.value,
-        "snapshot": _snapshot_from_status(status),
-        "summary": status.summary,
-    }
-
-
-def _compact_status_cells(
-    status: NotebookStatus,
-    *,
-    full: bool,
-    full_output: bool,
-    failed_only: bool,
-    query: str | None,
-    max_output_chars: int,
-) -> list[dict[str, Any]]:
-    cells: list[dict[str, Any]] = []
-    for cell in status.cells:
-        outputs = list(cell.outputs or ())
-        source_preview = _cell_source_preview(cell.source, full=full)
-        output_preview = _cell_output_preview(
-            outputs,
-            max_chars=max_output_chars,
-            full_output=full_output,
-        )
-        has_error = _has_error_output(outputs)
-        if failed_only and not has_error:
-            continue
-        if not _matches_query(
-            query=query,
-            text_parts=[
-                cell.source,
-                output_preview["text"] if output_preview else None,
-                cell.id,
-            ],
-        ):
-            continue
-        entry: dict[str, Any] = {
-            "id": cell.id,
-            "type": cell.type.value,
-            "execution_count": cell.execution_count,
-            "output_count": len(outputs),
-            "has_error_output": has_error,
-            "source_preview": source_preview["text"],
-        }
-        if source_preview.get("truncated"):
-            entry["source_truncated"] = True
-            entry["source_total_chars"] = source_preview["total_chars"]
-            entry["source_hint"] = "truncated, use --full to see complete source"
-        if output_preview is not None:
-            entry["output_preview"] = output_preview["text"]
-            if output_preview.get("truncated"):
-                entry["output_truncated"] = True
-                entry["output_total_chars"] = output_preview["total_chars"]
-                entry["output_hint"] = (
-                    "truncated, use --full-output to see complete output text"
-                )
-        if cell.change_kinds:
-            entry["change_kinds"] = [kind.value for kind in cell.change_kinds]
-        cells.append(entry)
-    return cells
-
-
 def _build_status_payload(
     status: NotebookStatus,
     *,
@@ -465,79 +261,27 @@ def _build_status_payload(
     }
 
 
-def _cell_payload_for_cat(
-    cell: Any,
-    *,
-    include_outputs: bool,
-    full_source: bool,
-    full_output: bool,
-    max_output_chars: int,
-) -> dict[str, Any]:
-    outputs = list(cell.outputs or ())
-    source_preview = _cell_source_preview(cell.source, full=full_source)
-    entry: dict[str, Any] = {
-        "id": cell.id,
-        "type": cell.type.value,
-        "execution_count": cell.execution_count,
-        "output_count": len(outputs),
-        "has_error_output": _has_error_output(outputs),
-        "source_preview": source_preview["text"],
-    }
-    if source_preview.get("truncated"):
-        entry["source_truncated"] = True
-        entry["source_total_chars"] = source_preview["total_chars"]
-    if full_source:
-        entry["source"] = cell.source
-    preview = _cell_output_preview(outputs, max_chars=max_output_chars, full_output=full_output)
-    if preview is not None:
-        entry["output_preview"] = preview["text"]
-        if preview.get("truncated"):
-            entry["output_truncated"] = True
-            entry["output_total_chars"] = preview["total_chars"]
-    if include_outputs:
-        entry["outputs"] = [
-            _summarize_output(output, max_chars=max_output_chars, full_output=full_output)
-            for output in outputs
-        ]
-    return entry
-
-
-def _cat_cells(
-    notebook: Notebook,
-    *,
-    include_outputs: bool,
-    full_source: bool,
-    full_output: bool,
-    max_output_chars: int,
-) -> list[dict[str, Any]]:
-    status = notebook.status(full=True)
-    return [
-        _cell_payload_for_cat(
-            cell,
-            include_outputs=include_outputs,
-            full_source=full_source,
-            full_output=full_output,
-            max_output_chars=max_output_chars,
-        )
-        for cell in status.cells
-    ]
-
-
 def _cat_output_payload(
     status: NotebookStatus,
     *,
+    path: str,
     cell_id: str,
     tail: bool,
     max_output_chars: int,
     full_output: bool,
 ) -> dict[str, Any]:
-    payload = status.cell(cell_id).output_payload(
-        max_chars=max_output_chars,
-        full_output=full_output,
-        tail=tail,
-    )
-    payload["selected_cell_id"] = cell_id
-    return payload
+    return {
+        "command": "cat",
+        "path": path,
+        "summary": status.aggregates()["summary"],
+        "cell_id": cell_id,
+        "selected_cell_id": cell_id,
+        **status.cell(cell_id).output_payload(
+            max_chars=max_output_chars,
+            full_output=full_output,
+            tail=tail,
+        ),
+    }
 
 
 def _build_cat_payload(
@@ -553,25 +297,23 @@ def _build_cat_payload(
 ) -> dict[str, Any]:
     status = notebook.status(full=True)
     if output_cell_id:
-        payload = _cat_output_payload(
+        return _cat_output_payload(
             status,
+            path=notebook.path,
             cell_id=output_cell_id,
             tail=False,
             max_output_chars=max_output_chars,
             full_output=full_output,
         )
-        payload["summary"] = status.aggregates()["summary"]
-        return payload
     if tail_output_cell_id:
-        payload = _cat_output_payload(
+        return _cat_output_payload(
             status,
+            path=notebook.path,
             cell_id=tail_output_cell_id,
             tail=True,
             max_output_chars=max_output_chars,
             full_output=full_output,
         )
-        payload["summary"] = status.aggregates()["summary"]
-        return payload
 
     if cell_id:
         cells = [
@@ -690,35 +432,12 @@ def _human_diff(status: NotebookStatus, *, full: bool = False) -> str:
     return "\n".join(lines)
 
 
-def _human_status_payload(data: dict[str, Any]) -> str:
-    lines = [
-        (
-            f"{Path(data['path']).name} · {data['cells_total']} cells "
-            f"({data['code_cells']} code, {data['markdown_cells']} markdown) · "
-            f"{data['executed_cells']} executed · {data['failed_cells']} failed · "
-            f"runtime {data['runtime_state']} · snapshot {data['snapshot']}"
-        )
-    ]
-    if not data["cells"]:
-        lines.append("- 0 matching cells")
-    else:
-        for cell in data["cells"]:
-            lines.append(
-                f"- {cell['id']} ({cell['type']}) exec={cell.get('execution_count')} "
-                f"outputs={cell.get('output_count', 0)}"
-            )
-            if cell.get("source_preview"):
-                lines.append(f"  {cell['source_preview']}")
-            if cell.get("output_preview"):
-                lines.append(f"  out: {cell['output_preview']}")
-    return _with_hints_text("\n".join(lines), data.get("hints"))
-
-
 def _human_cat(data: dict[str, Any]) -> str:
     if "outputs" in data and "cells" not in data:
         lines = [
             (
-                f"{Path(data['path']).name} · {data.get('cell_id')} · "
+                f"{Path(data.get('path', 'notebook')).name} · "
+                f"{data.get('selected_cell_id', data.get('cell_id'))} · "
                 f"{data.get('output_count', 0)} outputs"
             )
         ]
@@ -776,115 +495,6 @@ def _with_hints_text(body: str, hints: Iterable[str] | None) -> str:
     return "\n".join(lines)
 
 
-def _preview_text(
-    value: str,
-    *,
-    limit: int,
-    escape_hatch: str,
-) -> dict[str, Any]:
-    text = str(value)
-    if limit <= 0 or len(text) <= limit:
-        return {"text": text, "truncated": False, "total_chars": len(text)}
-    return {
-        "text": text[: limit - 1] + "…",
-        "truncated": True,
-        "total_chars": len(text),
-        "hint": f"truncated, {len(text)} chars total; use {escape_hatch} to see complete text",
-    }
-
-
-def _output_text(output: dict[str, Any]) -> str | None:
-    output_type = output.get("output_type")
-    if output_type == "stream":
-        return str(output.get("text", ""))
-    if output_type == "error":
-        traceback = output.get("traceback") or ()
-        if traceback:
-            return "\n".join(str(line) for line in traceback)
-        ename = output.get("ename")
-        evalue = output.get("evalue")
-        if ename or evalue:
-            return ": ".join(part for part in [str(ename or ""), str(evalue or "")] if part)
-        return None
-    if output_type in {"display_data", "execute_result"}:
-        data = output.get("data") or {}
-        if "text/plain" in data:
-            return str(data["text/plain"])
-    return None
-
-
-def _output_payload(
-    output: dict[str, Any],
-    *,
-    full_output: bool,
-    max_output_chars: int,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {"output_type": output.get("output_type")}
-    if "name" in output:
-        payload["name"] = output.get("name")
-    if "ename" in output:
-        payload["ename"] = output.get("ename")
-    if "evalue" in output:
-        payload["evalue"] = output.get("evalue")
-
-    text = _output_text(output)
-    if text is not None:
-        preview = (
-            {"text": text, "truncated": False, "total_chars": len(text)}
-            if full_output
-            else _preview_text(text, limit=max_output_chars, escape_hatch="--full-output")
-        )
-        payload["text"] = preview["text"]
-        payload["truncated"] = preview["truncated"]
-        payload["total_chars"] = preview["total_chars"]
-        if preview.get("hint"):
-            payload["hint"] = preview["hint"]
-    return payload
-
-
-def _cell_has_error(outputs: Iterable[dict[str, Any]] | None) -> bool:
-    return any(output.get("output_type") == "error" for output in (outputs or ()))
-
-
-def _cell_payload_summary(
-    cell,
-    *,
-    full_source: bool,
-    include_outputs: bool,
-    full_output: bool,
-    max_output_chars: int,
-) -> dict[str, Any]:
-    outputs = tuple(cell.outputs or ())
-    payload: dict[str, Any] = {
-        "id": cell.id,
-        "type": cell.type.value,
-        "execution_count": cell.execution_count,
-        "output_count": len(outputs),
-        "has_error": _cell_has_error(outputs),
-    }
-
-    source_preview = _preview_text(
-        cell.source,
-        limit=DEFAULT_SOURCE_PREVIEW_CHARS,
-        escape_hatch="--full",
-    )
-    if full_source:
-        payload["source"] = cell.source
-    else:
-        payload["source_preview"] = source_preview["text"]
-        payload["source_truncated"] = source_preview["truncated"]
-        payload["source_chars"] = source_preview["total_chars"]
-        if source_preview.get("hint"):
-            payload["source_hint"] = source_preview["hint"]
-
-    if include_outputs:
-        payload["outputs"] = [
-            _output_payload(output, full_output=full_output, max_output_chars=max_output_chars)
-            for output in outputs
-        ]
-    return payload
-
-
 def _job_hint(command: str) -> str:
     return f"Run `{command}`"
 
@@ -900,12 +510,29 @@ def _dedupe_hints(hints: Iterable[str]) -> list[str]:
     return ordered
 
 
+def _job_target_cells(raw_target_cells: Any) -> list[str]:
+    if raw_target_cells is None:
+        return []
+    if isinstance(raw_target_cells, list):
+        return [str(cell_id) for cell_id in raw_target_cells]
+    if isinstance(raw_target_cells, tuple):
+        return [str(cell_id) for cell_id in raw_target_cells]
+    if isinstance(raw_target_cells, str):
+        try:
+            parsed = json.loads(raw_target_cells)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        if isinstance(parsed, list):
+            return [str(cell_id) for cell_id in parsed]
+    return []
+
+
 def _status_summary(status: NotebookStatus, *, runtime_state: str | None = None) -> dict[str, Any]:
     cells = tuple(status.cells)
     code_cells = sum(1 for cell in cells if cell.type == CellType.CODE)
     markdown_cells = sum(1 for cell in cells if cell.type == CellType.MARKDOWN)
     executed_cells = sum(1 for cell in cells if cell.execution_count is not None)
-    failed_cells = sum(1 for cell in cells if _cell_has_error(cell.outputs))
+    failed_cells = sum(1 for cell in cells if cell.has_error_output())
     output_cells = sum(1 for cell in cells if cell.outputs)
     output_count = sum(len(cell.outputs or ()) for cell in cells)
     runtime_value = runtime_state or getattr(getattr(status, "runtime", None), "value", None)
@@ -951,64 +578,6 @@ def _cat_hints(path: str) -> list[str]:
             _job_hint(f"hypernote ix {shlex.quote(path)} -s 'print(42)'"),
         ]
     )
-
-
-def _cell_matches_query(cell, query: str | None) -> bool:
-    if not query:
-        return True
-    needle = query.lower()
-    if needle in str(cell.id).lower() or needle in str(cell.source).lower():
-        return True
-    for output in cell.outputs or ():
-        text = _output_text(output)
-        if text and needle in text.lower():
-            return True
-    return False
-
-
-def _status_payload(
-    status: NotebookStatus,
-    *,
-    command: str,
-    path: str,
-    include_outputs: bool,
-    include_full_source: bool,
-    max_output_chars: int,
-    full_output: bool,
-    failed_only: bool,
-    query: str | None,
-    runtime_state: str | None = None,
-) -> dict[str, Any]:
-    filtered_cells = []
-    for cell in status.cells:
-        if failed_only and not _cell_has_error(cell.outputs):
-            continue
-        if not _cell_matches_query(cell, query):
-            continue
-        filtered_cells.append(
-            _cell_payload_summary(
-                cell,
-                full_source=include_full_source,
-                include_outputs=include_outputs,
-                full_output=full_output,
-                max_output_chars=max_output_chars,
-            )
-        )
-
-    payload: dict[str, Any] = {
-        "command": command,
-        "path": path,
-        "snapshot": _snapshot_from_status(status),
-        "summary": _status_summary(status, runtime_state=runtime_state),
-        "cells": filtered_cells,
-        "filters": {
-            "failed_only": failed_only,
-            "query": query,
-        },
-    }
-    if not filtered_cells:
-        payload["empty"] = True
-    return payload
 
 
 def _human_status_payload(payload: dict[str, Any]) -> str:
@@ -1131,10 +700,7 @@ def _home_payload(ctx: click.Context) -> dict[str, Any]:
         for job in jobs_payload.get("jobs", []):
             if job.get("status") in {"succeeded", "failed", "interrupted"}:
                 continue
-            try:
-                target_cells = json.loads(job.get("target_cells") or "[]")
-            except json.JSONDecodeError:
-                target_cells = []
+            target_cells = _job_target_cells(job.get("target_cells"))
             active_jobs.append(
                 {
                     "job_id": job.get("job_id"),
@@ -1485,46 +1051,13 @@ def _job_result(
 ) -> dict[str, Any]:
     return _append_hints(
         {
-        "command": command,
-        "path": path,
-        "job": job.to_dict(),
-        "inserted_cells": [_cell_payload(cell) for cell in inserted_cells],
-        }
-        ,
+            "command": command,
+            "path": path,
+            "job": job.to_dict(),
+            "inserted_cells": [_cell_payload(cell) for cell in inserted_cells],
+        },
         _job_result_hints(path=path, job=job, inserted_cells=inserted_cells),
     )
-
-
-def _cat_payload(
-    notebook: Notebook,
-    *,
-    include_outputs: bool,
-    full: bool,
-    cell_id: str | None,
-    full_output: bool,
-    max_output_chars: int,
-) -> dict[str, Any]:
-    status = notebook.status(full=True)
-    cells = [
-        _cell_payload_summary(
-            cell,
-            full_source=full,
-            include_outputs=include_outputs,
-            full_output=full_output,
-            max_output_chars=max_output_chars,
-        )
-        for cell in status.cells
-        if cell_id is None or cell.id == cell_id
-    ]
-    payload = {
-        "command": "cat",
-        "path": notebook.path,
-        "summary": _status_summary(status),
-        "cells": cells,
-    }
-    if cell_id is not None:
-        payload["cell_id"] = cell_id
-    return _append_hints(payload, _cat_hints(notebook.path))
 
 
 @click.group(invoke_without_command=True)

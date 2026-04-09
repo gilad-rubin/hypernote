@@ -1234,6 +1234,7 @@ def _status_aggregates(status: NotebookStatus) -> dict[str, Any]:
     failed_cells = 0
     changed_cells = 0
     output_cells = 0
+    output_count = 0
 
     for cell in status.cells:
         if cell.type == CellType.CODE:
@@ -1247,6 +1248,7 @@ def _status_aggregates(status: NotebookStatus) -> dict[str, Any]:
         outputs = list(cell.outputs or ())
         if outputs:
             output_cells += 1
+            output_count += len(outputs)
         if cell.has_error_output():
             failed_cells += 1
         if cell.change_kinds:
@@ -1271,7 +1273,7 @@ def _status_aggregates(status: NotebookStatus) -> dict[str, Any]:
             "raw_cells": raw_cells,
             "executed_cells": executed_cells,
             "failed_cells": failed_cells,
-            "output_count": output_cells,
+            "output_count": output_count,
             "runtime_state": status.runtime.value,
         },
     }

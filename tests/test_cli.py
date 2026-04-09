@@ -295,6 +295,9 @@ class FakeCellStatus:
         payload = {"cell_id": self.id, "output_count": len(outputs), "outputs": outputs}
         if tail and outputs:
             payload["tail_output"] = outputs[-1]["text"]
+            if outputs[-1].get("truncated"):
+                payload["tail_output_truncated"] = True
+                payload["tail_output_total_chars"] = outputs[-1]["total_chars"]
         return payload
 
 
@@ -854,6 +857,34 @@ def test_home_without_subcommand_returns_live_state_payload(runner, monkeypatch,
     assert payload["hints"]
 
 
+def test_home_without_subcommand_accepts_list_target_cells(runner, monkeypatch, tmp_path):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "demo.ipynb").write_text("{}")
+
+    class FakeControl:
+        def list_jobs(self) -> dict:
+            return {
+                "jobs": [
+                    {
+                        "job_id": "job-1",
+                        "status": "running",
+                        "notebook_id": "demo.ipynb",
+                        "target_cells": ["cell-1", "cell-2"],
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(cli_main, "_sdk_control", lambda ctx: FakeControl())
+
+    result = runner.invoke(cli, [])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["active_job_count"] == 1
+    assert payload["active_jobs"][0]["target_cell_count"] == 2
+
+
 def test_status_returns_aggregates_and_hints(runner, fake_notebooks, monkeypatch):
     monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
     nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
@@ -885,6 +916,49 @@ def test_cat_cell_returns_compact_summary_and_hints(runner, fake_notebooks, monk
     assert payload["cell_id"] == "code-1"
     assert len(payload["cells"]) == 1
     assert payload["hints"]
+
+
+def test_cat_output_payload_keeps_command_and_path_envelope(
+    runner,
+    fake_notebooks,
+    monkeypatch,
+):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    cell = nb.cells.insert_code("print('hello')", id="code-1")
+    nb._cells[cell.id]["outputs"] = [{"output_type": "stream", "name": "stdout", "text": "hello\n"}]
+
+    result = runner.invoke(cli, ["cat", "demo.ipynb", "--output", "code-1"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "cat"
+    assert payload["path"] == "demo.ipynb"
+    assert payload["cell_id"] == "code-1"
+    assert payload["selected_cell_id"] == "code-1"
+    assert payload["summary"]["output_count"] == 1
+
+
+def test_cat_tail_output_payload_surfaces_tail_truncation_metadata(
+    runner,
+    fake_notebooks,
+    monkeypatch,
+):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    cell = nb.cells.insert_code("print('hello')", id="code-1")
+    nb._cells[cell.id]["outputs"] = [
+        {"output_type": "stream", "name": "stdout", "text": "x" * 500}
+    ]
+
+    result = runner.invoke(cli, ["cat", "demo.ipynb", "--tail-output", "code-1"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "cat"
+    assert payload["path"] == "demo.ipynb"
+    assert payload["tail_output_truncated"] is True
+    assert payload["tail_output_total_chars"] == 500
 
 
 def test_job_get_and_stdin_use_sdk_control(runner, monkeypatch):
