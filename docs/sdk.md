@@ -76,6 +76,34 @@ CLI recovery hints for `job get` and `cat`.
 - `snap = nb.snapshot()` captures a diff baseline
 - `nb.diff(snapshot=snap)` returns changed cells only
 
+### Summary-first helpers
+
+`NotebookStatus` and `CellStatus` now expose compact observation helpers so the CLI and SDK
+consumers can share the same summary/truncation rules instead of re-encoding them in each adapter.
+
+- `status.aggregates()`
+  - top-level counts and runtime state for the notebook
+- `status.compact_cells(...)`
+  - filtered, compact cell summaries with source/output previews
+- `status.compact_dict(...)`
+  - notebook aggregates plus compact cells in one payload
+- `status.cell(cell_id)`
+  - look up a specific `CellStatus` by id
+- `cell.compact_dict(...)`
+  - compact source/output view for one cell
+- `cell.output_payload(...)`
+  - focused output-only view for one cell, with optional tail preview
+
+These helpers are intended for agent-oriented observation and tooling layers. They preserve
+the notebook-first object model while centralizing truncation, error detection, and focused-read
+rules in the SDK.
+
+Contract guidance:
+
+- shared observation semantics should live here once, then be rendered by the CLI and tests
+- aggregate fields should report exact semantics, not approximations
+- boundary payload normalization belongs at adapter edges, not scattered across consumers
+
 ## Public errors
 
 - `HypernoteError`

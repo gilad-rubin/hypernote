@@ -293,6 +293,38 @@ def test_status_and_diff():
     assert diff.cells[0].change_kinds
 
 
+def test_status_compact_dict_and_cell_helpers():
+    _, transport = _make_transport()
+    nb = hypernote.connect(
+        "tmp/sdk-compact-helpers.ipynb",
+        create=True,
+        server="http://test",
+        transport=transport,
+    )
+    cell = nb.cells.insert_code("print('hello world')", id="hello-cell")
+
+    job = cell.run()
+    assert job.wait().status == JobStatus.SUCCEEDED
+
+    status = nb.status(full=True)
+    compact = status.compact_dict(include_outputs=True, max_output_chars=20)
+
+    assert compact["cells_total"] == 1
+    assert compact["summary"]["cell_count"] == 1
+    assert compact["runtime_state"] == status.runtime.value
+    assert len(compact["cells"]) == 1
+
+    cell_payload = compact["cells"][0]
+    assert cell_payload["id"] == "hello-cell"
+    assert cell_payload["output_count"] == 1
+    assert cell_payload["outputs"][0]["output_type"] == "stream"
+
+    output_payload = status.cell("hello-cell").output_payload(max_chars=5, tail=True)
+    assert output_payload["cell_id"] == "hello-cell"
+    assert output_payload["output_count"] == 1
+    assert output_payload["tail_output"]
+
+
 def test_diff_reports_added_source_edit_and_execution_changes():
     _, transport = _make_transport()
     nb = hypernote.connect("tmp/sdk.ipynb", create=True, server="http://test", transport=transport)

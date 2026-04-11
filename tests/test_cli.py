@@ -219,12 +219,94 @@ class FakeCellStatus:
     execution_count: int | None
     change_kinds: tuple[ChangeKind, ...] = ()
 
+    def has_error_output(self) -> bool:
+        return any(output.get("output_type") == "error" for output in self.outputs)
+
+    def compact_dict(
+        self,
+        *,
+        full_source: bool = False,
+        include_outputs: bool = False,
+        full_output: bool = False,  # noqa: ARG002
+        max_output_chars: int = 400,
+    ) -> dict:
+        entry = {
+            "id": self.id,
+            "type": self.type.value,
+            "execution_count": self.execution_count,
+            "output_count": len(self.outputs),
+            "has_error_output": self.has_error_output(),
+            "source_preview": self.source[:120] + ("…" if len(self.source) > 120 else ""),
+        }
+        if len(self.source) > 120:
+            entry["source_truncated"] = True
+            entry["source_total_chars"] = len(self.source)
+            entry["source_hint"] = "truncated, use --full to see complete source"
+        if full_source:
+            entry["source"] = self.source
+        if self.outputs:
+            text = str(self.outputs[-1].get("text", ""))
+            preview = text[:max_output_chars] + ("…" if len(text) > max_output_chars else "")
+            entry["output_preview"] = preview
+            if len(text) > max_output_chars:
+                entry["output_truncated"] = True
+                entry["output_total_chars"] = len(text)
+                entry["output_hint"] = (
+                    f"truncated, {len(text)} chars total; "
+                    "use --full-output to see complete text"
+                )
+        if include_outputs:
+            summarized = []
+            for output in self.outputs:
+                text = str(output.get("text", ""))
+                item = {"output_type": output.get("output_type", "unknown"), "text": text}
+                if len(text) > max_output_chars:
+                    item["text"] = text[:max_output_chars] + "…"
+                    item["truncated"] = True
+                    item["total_chars"] = len(text)
+                    item["hint"] = (
+                        f"truncated, {len(text)} chars total; "
+                        "use --full-output to see complete text"
+                    )
+                summarized.append(item)
+            entry["outputs"] = summarized
+        return entry
+
+    def output_payload(
+        self,
+        *,
+        max_chars: int = 400,
+        full_output: bool = False,  # noqa: ARG002
+        tail: bool = False,
+    ) -> dict:
+        outputs = []
+        for output in self.outputs:
+            text = str(output.get("text", ""))
+            item = {"output_type": output.get("output_type", "unknown"), "text": text}
+            if len(text) > max_chars:
+                item["text"] = text[:max_chars] + "…"
+                item["truncated"] = True
+                item["total_chars"] = len(text)
+                item["hint"] = (
+                    f"truncated, {len(text)} chars total; "
+                    "use --full-output to see complete text"
+                )
+            outputs.append(item)
+        payload = {"cell_id": self.id, "output_count": len(outputs), "outputs": outputs}
+        if tail and outputs:
+            payload["tail_output"] = outputs[-1]["text"]
+            if outputs[-1].get("truncated"):
+                payload["tail_output_truncated"] = True
+                payload["tail_output_total_chars"] = outputs[-1]["total_chars"]
+        return payload
+
 
 class FakeNotebookStatus:
     def __init__(self, notebook: "FakeNotebook", *, diff: bool = False):
         self.notebook_path = notebook.path
         self.summary = f"{notebook.path} · {'diff' if diff else 'status'}"
         self.current = SimpleNamespace(token="snap-123")
+        self.runtime = notebook.runtime.status
         self.cells = tuple(
             FakeCellStatus(
                 id=cell_id,
@@ -252,6 +334,94 @@ class FakeNotebookStatus:
                 for cell in self.cells
             ],
         }
+
+    def aggregates(self) -> dict:
+        code_cells = sum(1 for cell in self.cells if cell.type == CellType.CODE)
+        markdown_cells = sum(1 for cell in self.cells if cell.type == CellType.MARKDOWN)
+        executed_cells = sum(1 for cell in self.cells if cell.execution_count is not None)
+        failed_cells = sum(1 for cell in self.cells if cell.has_error_output())
+        output_count = sum(1 for cell in self.cells if cell.outputs)
+        return {
+            "cells_total": len(self.cells),
+            "code_cells": code_cells,
+            "markdown_cells": markdown_cells,
+            "raw_cells": 0,
+            "executed_cells": executed_cells,
+            "failed_cells": failed_cells,
+            "changed_cells": 0,
+            "output_cells": output_count,
+            "runtime_state": self.runtime.value,
+            "snapshot": self.current.token,
+            "summary": {
+                "headline": self.summary,
+                "cell_count": len(self.cells),
+                "code_cells": code_cells,
+                "markdown_cells": markdown_cells,
+                "raw_cells": 0,
+                "executed_cells": executed_cells,
+                "failed_cells": failed_cells,
+                "output_count": output_count,
+                "runtime_state": self.runtime.value,
+            },
+        }
+
+    def compact_cells(
+        self,
+        *,
+        full_source: bool = False,
+        include_outputs: bool = False,
+        full_output: bool = False,
+        failed_only: bool = False,
+        query: str | None = None,
+        max_output_chars: int = 400,
+    ) -> list[dict]:
+        cells = []
+        for cell in self.cells:
+            if failed_only and not cell.has_error_output():
+                continue
+            payload = cell.compact_dict(
+                full_source=full_source,
+                include_outputs=include_outputs,
+                full_output=full_output,
+                max_output_chars=max_output_chars,
+            )
+            if query and query.lower() not in json.dumps(payload).lower():
+                continue
+            cells.append(payload)
+        return cells
+
+    def compact_dict(
+        self,
+        *,
+        full_source: bool = False,
+        include_outputs: bool = False,
+        full_output: bool = False,
+        failed_only: bool = False,
+        query: str | None = None,
+        max_output_chars: int = 400,
+        include_details: bool = False,
+    ) -> dict:
+        payload = {
+            **self.aggregates(),
+            "filters": {"failed_only": failed_only, "query": query},
+            "cells": self.compact_cells(
+                full_source=full_source,
+                include_outputs=include_outputs,
+                full_output=full_output,
+                failed_only=failed_only,
+                query=query,
+                max_output_chars=max_output_chars,
+            ),
+        }
+        if include_details:
+            payload["details"] = self.to_dict()
+        return payload
+
+    def cell(self, cell_id: str) -> FakeCellStatus:
+        for cell in self.cells:
+            if cell.id == cell_id:
+                return cell
+        raise cli_main.CellNotFoundError(cell_id)
 
 
 class FakeNotebook:
@@ -339,6 +509,46 @@ def test_cli_help(runner):
         assert cmd in result.output
 
 
+def test_cli_home_view_reports_server_state_and_hints(runner, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+
+    class FakeControl:
+        def list_jobs(self) -> dict:
+            return {"jobs": []}
+
+    monkeypatch.setattr(cli_main, "_sdk_control", lambda ctx: FakeControl())
+
+    result = runner.invoke(cli, [])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "home"
+    assert payload["bin"] == "hypernote"
+    assert payload["server_reachable"] is True
+    assert payload["active_job_count"] == 0
+    assert any("create tmp/demo.ipynb --empty" in hint for hint in payload["hints"])
+    assert any("setup doctor" in hint for hint in payload["hints"])
+
+
+def test_cli_home_view_surfaces_unreachable_server_without_crashing(runner, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+
+    class FakeControl:
+        def list_jobs(self) -> dict:
+            raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(cli_main, "_sdk_control", lambda ctx: FakeControl())
+
+    result = runner.invoke(cli, [])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "home"
+    assert payload["server_reachable"] is False
+    assert "connection refused" in payload["server_error"]
+    assert any("setup serve" in hint for hint in payload["hints"])
+
+
 def test_ix_non_tty_returns_compact_json_by_default(runner, fake_notebooks, monkeypatch):
     monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
     nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
@@ -353,6 +563,8 @@ def test_ix_non_tty_returns_compact_json_by_default(runner, fake_notebooks, monk
     assert payload["command"] == "ix"
     assert payload["job"]["status"] == "succeeded"
     assert payload["inserted_cells"][0]["id"] == "cell-1"
+    assert any("hypernote cat demo.ipynb" in hint for hint in payload["hints"])
+    assert any("hypernote status demo.ipynb" in hint for hint in payload["hints"])
 
 
 def test_ix_tty_streams_human_progress_by_default(runner, fake_notebooks, monkeypatch):
@@ -515,6 +727,20 @@ def test_batch_ix_reports_partial_state_after_failure(runner, fake_notebooks, mo
     assert [entry["cell_id"] for entry in payload["results"]] == ["intro-md", "setup-cell"]
 
 
+def test_ix_failure_returns_repair_hints(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    nb.next_job_transitions.append([{"status": JobStatus.FAILED}])
+
+    result = runner.invoke(cli, ["ix", "demo.ipynb", "-s", "raise RuntimeError('boom')"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output.strip().splitlines()[-1])
+    assert payload["job"]["status"] == "failed"
+    assert any("edit replace demo.ipynb cell-1" in hint for hint in payload["hints"])
+    assert any("exec demo.ipynb cell-1" in hint for hint in payload["hints"])
+
+
 def test_edit_replace_maps_to_sdk_mutation(runner, fake_notebooks, monkeypatch):
     monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
     nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
@@ -539,6 +765,200 @@ def test_status_and_diff_surface_observation_model(runner, fake_notebooks, monke
     assert diff_result.exit_code == 0
     assert json.loads(status_result.output)["command"] == "status"
     assert json.loads(diff_result.output)["command"] == "diff"
+
+
+def test_status_returns_summary_first_payload_with_hints_and_truncation(
+    runner,
+    fake_notebooks,
+    monkeypatch,
+):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    long_source = "print('" + ("x" * 200) + "')"
+    nb.cells.insert_code(long_source, id="code-1")
+    nb._cells["code-1"]["outputs"] = [
+        {"output_type": "stream", "name": "stdout", "text": "y" * 500}
+    ]
+    nb._cells["code-1"]["execution_count"] = 1
+
+    result = runner.invoke(cli, ["status", "demo.ipynb"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "status"
+    assert payload["cells_total"] == 1
+    assert payload["executed_cells"] == 1
+    assert payload["failed_cells"] == 0
+    assert payload["snapshot"] == "snap-123"
+    cell = payload["cells"][0]
+    assert cell["source_truncated"] is True
+    assert cell["output_truncated"] is True
+    assert "use --full" in cell["source_hint"]
+    assert "use --full-output" in cell["output_hint"]
+    assert any("hypernote cat demo.ipynb" in hint for hint in payload["hints"])
+
+
+def test_cat_defaults_to_compact_cells_and_truncates_outputs(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    long_source = "value = '" + ("x" * 180) + "'"
+    nb.cells.insert_code(long_source, id="code-1")
+    nb._cells["code-1"]["outputs"] = [
+        {"output_type": "stream", "name": "stdout", "text": "z" * 500}
+    ]
+    nb._cells["code-1"]["execution_count"] = 1
+
+    result = runner.invoke(cli, ["cat", "demo.ipynb"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "cat"
+    assert payload["summary"]["cell_count"] == 1
+    assert payload["summary"]["output_count"] == 1
+    cell = payload["cells"][0]
+    assert "source_preview" in cell
+    assert "source" not in cell
+    assert cell["source_truncated"] is True
+    output = cell["outputs"][0]
+    assert output["truncated"] is True
+    assert output["total_chars"] == 500
+    assert "use --full-output" in output["hint"]
+    assert any("hypernote status demo.ipynb" in hint for hint in payload["hints"])
+
+
+def test_home_without_subcommand_returns_live_state_payload(runner, monkeypatch, tmp_path):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "demo.ipynb").write_text("{}")
+
+    class FakeControl:
+        def list_jobs(self) -> dict:
+            return {
+                "jobs": [
+                    {
+                        "job_id": "job-1",
+                        "status": "running",
+                        "notebook_id": "demo.ipynb",
+                        "target_cells": '["cell-1"]',
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(cli_main, "_sdk_control", lambda ctx: FakeControl())
+
+    result = runner.invoke(cli, [])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "home"
+    assert payload["server_reachable"] is True
+    assert payload["active_job_count"] == 1
+    assert payload["workspace_notebook_count"] == 1
+    assert payload["hints"]
+
+
+def test_home_without_subcommand_accepts_list_target_cells(runner, monkeypatch, tmp_path):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "demo.ipynb").write_text("{}")
+
+    class FakeControl:
+        def list_jobs(self) -> dict:
+            return {
+                "jobs": [
+                    {
+                        "job_id": "job-1",
+                        "status": "running",
+                        "notebook_id": "demo.ipynb",
+                        "target_cells": ["cell-1", "cell-2"],
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(cli_main, "_sdk_control", lambda ctx: FakeControl())
+
+    result = runner.invoke(cli, [])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["active_job_count"] == 1
+    assert payload["active_jobs"][0]["target_cell_count"] == 2
+
+
+def test_status_returns_aggregates_and_hints(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    nb.runtime.status = RuntimeStatus.LIVE_ATTACHED
+    nb.cells.insert_code("print(1)", id="code-1")
+
+    result = runner.invoke(cli, ["status", "demo.ipynb"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "status"
+    assert payload["cells_total"] == 1
+    assert payload["runtime_state"] == "live-attached"
+    assert payload["hints"]
+
+
+def test_cat_cell_returns_compact_summary_and_hints(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    cell = nb.cells.insert_code("print('hello')", id="code-1")
+    nb._cells[cell.id]["outputs"] = [{"output_type": "stream", "name": "stdout", "text": "hello\n"}]
+    nb._cells[cell.id]["execution_count"] = 1
+
+    result = runner.invoke(cli, ["cat", "demo.ipynb", "--cell", "code-1"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "cat"
+    assert payload["cell_id"] == "code-1"
+    assert len(payload["cells"]) == 1
+    assert payload["hints"]
+
+
+def test_cat_output_payload_keeps_command_and_path_envelope(
+    runner,
+    fake_notebooks,
+    monkeypatch,
+):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    cell = nb.cells.insert_code("print('hello')", id="code-1")
+    nb._cells[cell.id]["outputs"] = [{"output_type": "stream", "name": "stdout", "text": "hello\n"}]
+
+    result = runner.invoke(cli, ["cat", "demo.ipynb", "--output", "code-1"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "cat"
+    assert payload["path"] == "demo.ipynb"
+    assert payload["cell_id"] == "code-1"
+    assert payload["selected_cell_id"] == "code-1"
+    assert payload["summary"]["output_count"] == 1
+
+
+def test_cat_tail_output_payload_surfaces_tail_truncation_metadata(
+    runner,
+    fake_notebooks,
+    monkeypatch,
+):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    cell = nb.cells.insert_code("print('hello')", id="code-1")
+    nb._cells[cell.id]["outputs"] = [
+        {"output_type": "stream", "name": "stdout", "text": "x" * 500}
+    ]
+
+    result = runner.invoke(cli, ["cat", "demo.ipynb", "--tail-output", "code-1"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "cat"
+    assert payload["path"] == "demo.ipynb"
+    assert payload["tail_output_truncated"] is True
+    assert payload["tail_output_total_chars"] == 500
 
 
 def test_job_get_and_stdin_use_sdk_control(runner, monkeypatch):

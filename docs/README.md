@@ -15,5 +15,8 @@ Start here:
 
 The common operator entrypoint is now `hypernote setup serve`, followed by
 `hypernote setup doctor` when you need to confirm server and kernelspec state.
+The bare `hypernote` command is the live workspace dashboard: it shows current
+workspace state, active jobs, and next-step hints without needing a subcommand.
 
 Public docs should describe shipped behavior only. Internal implementation notes belong in `dev/`.
+Public docs should describe stable contracts and user-visible invariants, not just happy-path examples.

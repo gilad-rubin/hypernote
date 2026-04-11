@@ -7,7 +7,11 @@ description: Work against Hypernote's notebook-first SDK and agent-first CLI. Us
 
 `hypernote` is the notebook runtime surface. The SDK is the core API. The CLI is a thin shell over that SDK.
 
-Run `uv run hypernote --help` for the current command list, and `uv run hypernote <command> --help` for exact syntax.
+Design rule: if a compact read model, truncation rule, or focused observation flow is useful in the CLI and also generally useful to agents or other adapters, define it in the SDK first and let the CLI render it, rather than re-encoding the logic in the CLI.
+
+Review rule: prefer finishing a feature with contract cleanup, not just feature coverage. Variants should share one envelope, aggregate names should match their exact semantics, and adapters should normalize boundary payload shapes instead of assuming one representation.
+
+Run `uv run hypernote` for a live workspace dashboard, `uv run hypernote --help` for the current command list, and `uv run hypernote <command> --help` for exact syntax.
 
 ## Prerequisite
 
@@ -63,6 +67,7 @@ uv run hypernote --server http://127.0.0.1:8889 setup doctor
 ## Quick Start
 
 ```bash
+uv run hypernote                   # live workspace dashboard and hints
 uv run hypernote setup doctor            # check for existing server
 uv run hypernote setup serve &           # only if no server is running
 uv run hypernote create tmp/demo.ipynb --empty
@@ -112,14 +117,15 @@ Do not use `-s` for multi-line code. Shell quoting will corrupt newlines.
 - `exec` — re-run an existing cell by id (useful after editing a failed cell)
 - `edit` — mutate cell source or structure without executing
 - `run-all` / `restart` / `restart-run-all` — notebook-wide execution
-- `status` / `diff` / `cat` — inspect notebook state and outputs
+- `status` / `diff` / `cat` — inspect notebook state and outputs with summary-first reads, filtered cells, and focused output flags
 
 ### When a cell fails
 
 1. Read the error output from `ix`.
-2. Fix the source with `edit replace`.
-3. Re-run with `exec <cell-id>`.
-4. Continue with the next `ix`.
+2. Use `cat --cell <cell-id>` or `cat --output <cell-id>` if you need a compact view of the failure.
+3. Fix the source with `edit replace`.
+4. Re-run with `exec <cell-id>`.
+5. Continue with the next `ix`.
 
 Do not re-insert a failed cell. Edit it in place and re-execute.
 
@@ -140,12 +146,17 @@ know exactly where to resume. Cells after the halt point were never inserted int
 4. Prefer the SDK and CLI over raw HTTP unless you are explicitly working on server routes.
 5. Treat Jupyter shared documents as the source of truth. Open or closed JupyterLab tabs must not change correctness.
 6. For agents, prefer default non-TTY JSON output unless you intentionally want background streaming.
-7. Use `--stream-json` only when you plan to watch the process; otherwise it wastes context.
-8. Start the server with `hypernote setup serve` instead of hand-writing Jupyter flags.
-9. Skip large rich outputs such as `graph.visualize()` in headless automation unless the visualization is the point of the run.
-10. Use unique notebook paths in tests and demos.
-11. Move durable notes into `docs/` or `dev/`; keep `tmp/` disposable.
-12. Treat Hypernote jobs, runtime state, and cell attribution as ephemeral coordination state, not durable history.
+7. Start with `hypernote` itself when you need workspace context and the next best action.
+8. Use `--stream-json` only when you plan to watch the process; otherwise it wastes context.
+9. Start the server with `hypernote setup serve` instead of hand-writing Jupyter flags.
+10. Skip large rich outputs such as `graph.visualize()` in headless automation unless the visualization is the point of the run.
+11. Use unique notebook paths in tests and demos.
+12. Move durable notes into `docs/` or `dev/`; keep `tmp/` disposable.
+13. Treat Hypernote jobs, runtime state, and cell attribution as ephemeral coordination state, not durable history.
+14. When changing read/inspection behavior, update the SDK observation helpers before or alongside the CLI so every adapter shares the same summary/truncation rules.
+15. Keep command hints grounded in shipped commands and actual runtime values. Do not document or suggest a focused read flag unless it exists in the CLI.
+16. For contract-heavy changes, test the focused variants, empty/failure states, and alternate valid payload shapes, not just the happy path.
+17. When a helper moves into the SDK or another shared layer, remove the old CLI/test copy in the same change.
 
 ## Before You Change Behavior
 
