@@ -86,12 +86,15 @@ Default CLI contract:
 - Terminology: when the user says "our system", treat that as the maintained project-operating surface, including `AGENTS.md`, `SKILL.md`, `docs/`, `dev/`, tests, and other shared guidance or verification artifacts around the code.
 - SDK first. CLI behavior should come from the SDK, not duplicate raw HTTP semantics.
 - When CLI and SDK both need compact observation behavior, define the summary/truncation/focused-read logic in the SDK and let the CLI adapt it.
+- Shared logic needs one owner. When a helper or shaping rule moves into the SDK or another shared layer, delete the old copies instead of letting multiple versions drift.
 - One truth. Do not reintroduce a contents-vs-YDoc split for notebook reads or writes.
 - Runtime creation must honor the requested kernel first, otherwise notebook metadata
   `kernelspec.name`, otherwise `python3`.
 - Keep control-plane state ephemeral. Do not add durable job history unless the product explicitly needs it.
 - Our system is part of done. After every meaningful change, update the relevant parts of `AGENTS.md`, `SKILL.md`, `docs/`, `dev/`, tests, and adjacent shared project guidance so they stay in sync with implementation.
 - Keep adapters thin. CLI, JupyterLab, and tests should reuse shared contracts instead of re-encoding notebook behavior.
+- Treat output and API shapes as contracts. Feature variants should preserve the same top-level envelope and field semantics unless there is a deliberate, documented exception.
+- Normalize boundary inputs early. If upstream payloads can arrive in more than one valid shape, accept and normalize them at the adapter boundary rather than assuming a single representation.
 - Prefer unique notebook paths in tests and demos. Browser tests must also use unique JupyterLab workspace URLs.
 - Keep `tmp/` disposable. Durable notes belong in `docs/` or `dev/`, not `tmp/`.
 
@@ -143,6 +146,11 @@ Default CLI contract:
   - CLI output contract
   - live server behavior
   - browser regression for streaming and late-open correctness
+- for contract-heavy changes, add invariant coverage for:
+  - default and focused variants
+  - empty and failure states
+  - alternate valid input shapes from upstream payloads
+  - parity between real helpers and any fake/test-double implementations
 
 ## Verification
 
@@ -168,3 +176,10 @@ When browser or live-server behavior changes, also use:
 HYPERNOTE_INTEGRATION=1 uv run python -m pytest -q tests/test_live_server.py
 uv run python -m pytest -q tests/test_browser_regression.py
 ```
+
+Before opening or updating a PR for a cross-surface change, do a short contract pass:
+
+- check that sibling command variants still share one consistent envelope
+- check that aggregate field names still match their exact semantics
+- check that docs and hints only mention shipped commands and flags
+- check that moved logic no longer has stale copies in adapters or tests

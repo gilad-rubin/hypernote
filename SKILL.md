@@ -9,6 +9,8 @@ description: Work against Hypernote's notebook-first SDK and agent-first CLI. Us
 
 Design rule: if a compact read model, truncation rule, or focused observation flow is useful in the CLI and also generally useful to agents or other adapters, define it in the SDK first and let the CLI render it, rather than re-encoding the logic in the CLI.
 
+Review rule: prefer finishing a feature with contract cleanup, not just feature coverage. Variants should share one envelope, aggregate names should match their exact semantics, and adapters should normalize boundary payload shapes instead of assuming one representation.
+
 Run `uv run hypernote` for a live workspace dashboard, `uv run hypernote --help` for the current command list, and `uv run hypernote <command> --help` for exact syntax.
 
 ## Prerequisite
@@ -153,6 +155,8 @@ know exactly where to resume. Cells after the halt point were never inserted int
 13. Treat Hypernote jobs, runtime state, and cell attribution as ephemeral coordination state, not durable history.
 14. When changing read/inspection behavior, update the SDK observation helpers before or alongside the CLI so every adapter shares the same summary/truncation rules.
 15. Keep command hints grounded in shipped commands and actual runtime values. Do not document or suggest a focused read flag unless it exists in the CLI.
+16. For contract-heavy changes, test the focused variants, empty/failure states, and alternate valid payload shapes, not just the happy path.
+17. When a helper moves into the SDK or another shared layer, remove the old CLI/test copy in the same change.
 
 ## Before You Change Behavior
 

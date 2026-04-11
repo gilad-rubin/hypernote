@@ -66,6 +66,13 @@ Hypernote owns:
 - actor attribution
 - SDK, CLI, and thin REST handlers
 
+## Design discipline
+
+- shared behavior should have one owner, usually the SDK for agent-facing observation rules
+- command and payload variants should preserve one contract unless a difference is explicit and documented
+- adapters should normalize valid upstream shape differences at the boundary
+- tests should cover invariants across variants, not only the main workflow
+
 ## Documentation
 
 - [Getting Started](docs/getting-started.md)

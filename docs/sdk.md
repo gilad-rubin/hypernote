@@ -98,6 +98,12 @@ These helpers are intended for agent-oriented observation and tooling layers. Th
 the notebook-first object model while centralizing truncation, error detection, and focused-read
 rules in the SDK.
 
+Contract guidance:
+
+- shared observation semantics should live here once, then be rendered by the CLI and tests
+- aggregate fields should report exact semantics, not approximations
+- boundary payload normalization belongs at adapter edges, not scattered across consumers
+
 ## Public errors
 
 - `HypernoteError`

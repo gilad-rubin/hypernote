@@ -11,6 +11,13 @@ The CLI is a thin client. It requires a running Hypernote-enabled Jupyter server
 Its summary-first read surfaces are backed by SDK observation helpers so the CLI, agents, and
 other adapters can share the same truncation and focused-read rules.
 
+CLI contract principles:
+
+- focused read variants should preserve the same top-level command envelope unless documented otherwise
+- field names should keep one meaning across commands and modes
+- hints should only suggest shipped commands and flags
+- adapter-level parsing should normalize alternate valid server payload shapes before rendering
+
 Commands often append contextual hints. In human mode they appear as `hint:` lines; in JSON mode they are included in a `hints` array.
 
 ## Home view
@@ -72,6 +79,8 @@ Job and runtime commands are for the live notebook session. They should be treat
 - `--watch`: attached human-readable progress
 - `--stream-json`: JSONL event stream
 - `--progress=quiet|events|full`: streaming verbosity
+
+For command variants, prefer consistent structure over clever special cases. A more focused read should usually narrow the payload, not invent a new envelope.
 
 ## Read Patterns
 
