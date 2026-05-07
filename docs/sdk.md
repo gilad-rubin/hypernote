@@ -49,6 +49,9 @@ nb = hypernote.connect("tmp/demo.ipynb", create=True)
 
 - `status`
 - `recoverable`
+- `session_id`
+- `kernel_id`
+- `kernel_name`
 - `ensure()`
 - `stop()`
 
@@ -89,6 +92,12 @@ consumers can share the same summary/truncation rules instead of re-encoding the
   - notebook aggregates plus compact cells in one payload
 - `status.cell(cell_id)`
   - look up a specific `CellStatus` by id
+- `cell.has_error_output()`
+  - whether the cell's outputs include an error
+- `cell.source_preview(...)`
+  - truncated or full source preview for one cell
+- `cell.output_preview(...)`
+  - truncated or full output preview for one cell
 - `cell.compact_dict(...)`
   - compact source/output view for one cell
 - `cell.output_payload(...)`
