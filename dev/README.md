@@ -11,7 +11,6 @@ Read these first:
 - [Testing and Verification](testing-and-verification.md)
 - [Release Process](release.md)
 - [CLI Agent Ergonomics Rollout](cli-agent-ergonomics-rollout.md)
-- [VS Code Extension Notes](vscode-extension.md)
 
 Releases: see [Release Process](release.md). Always via PR — release-prep
 commits go through review like feature work. Workflow lives at

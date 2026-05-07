@@ -10,7 +10,6 @@ Start here:
 - [CLI Reference](cli.md)
 - [SDK Reference](sdk.md)
 - [Runtime Model](runtime-model.md)
-- [VS Code Extension](vscode-extension.md)
 - [Browser Regression Spec](browser-regression-spec.md)
 
 The common operator entrypoint is now `hypernote setup serve`, followed by
