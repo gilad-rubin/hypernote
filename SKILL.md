@@ -163,7 +163,6 @@ know exactly where to resume. Cells after the halt point were never inserted int
 1. Read [AGENTS.md](AGENTS.md).
 2. Check the current public surface in [docs/cli.md](docs/cli.md) and [docs/sdk.md](docs/sdk.md).
 3. If browser-visible execution behavior changes, check [docs/browser-regression-spec.md](docs/browser-regression-spec.md).
-4. If the VS Code embedding experience changes, check [docs/vscode-extension.md](docs/vscode-extension.md).
 
 ## Verification
 
@@ -173,7 +172,7 @@ Install the right tier first:
 uv sync --extra dev
 ```
 
-Use `uv sync` for base runtime work and `uv sync --extra lab` when you specifically need the full collaborative JupyterLab bundle without the rest of the dev toolchain.
+Use `uv sync` for base runtime work and `uv sync --extra lab` when you need JupyterLab's collaborative editing on top of the runtime without the rest of the dev toolchain.
 
 Then run:
 

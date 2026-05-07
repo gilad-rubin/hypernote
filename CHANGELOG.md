@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Notes
+
+- correction: the 0.2.0 headline mentions "an experimental VS Code extension" but the
+  `vscode-extension/` work was never committed and did not ship in the 0.2.0 artifact.
+  Documentation referring to the VS Code extension has been removed from `README.md`,
+  `AGENTS.md`, `SKILL.md`, `docs/README.md`, `dev/README.md`, and `dev/module-map.md`.
+
 ## 0.2.0 - 2026-05-07
 
 Native JupyterLab as a first-class concurrent actor: open a notebook

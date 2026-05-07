@@ -37,7 +37,6 @@ Hypernote owns a thin control plane:
 - Jupyter extension wiring in [src/hypernote/server/extension.py](src/hypernote/server/extension.py)
 - ephemeral job and attribution ledger in [src/hypernote/actor_ledger.py](src/hypernote/actor_ledger.py)
 - subshell-aware execute/interrupt/restart in [src/hypernote/server/subshell.py](src/hypernote/server/subshell.py)
-- optional VS Code embedding surface in [vscode-extension/src/extension.ts](vscode-extension/src/extension.ts)
 
 Core rule: notebook edits and execution must operate on one logical document truth whether JupyterLab is closed, already open, or opened mid-run.
 
@@ -111,14 +110,6 @@ Default CLI contract:
 
 ## If You Are Editing...
 
-### `vscode-extension/*`
-
-- keep the extension decoupled from Hypernote-specific notebook semantics
-- prefer embedding JupyterLab over recreating notebook behavior in VS Code
-- if the extension launches Jupyter itself, keep that process local, explicit, and easy to inspect
-- update [docs/vscode-extension.md](docs/vscode-extension.md)
-- update [dev/vscode-extension.md](dev/vscode-extension.md)
-
 ### `src/hypernote/sdk.py` or `src/hypernote/errors.py`
 
 - preserve the notebook-first public object model
@@ -171,7 +162,7 @@ Install guidance:
 - `uv sync`
   - base Hypernote runtime/server usage
 - `uv sync --extra lab`
-  - adds the collaborative JupyterLab bundle
+  - adds `jupyter-collaboration` so JupyterLab can edit shared documents collaboratively
 - `uv sync --extra dev`
   - adds local development, lint, test, and browser-validation tooling
 
