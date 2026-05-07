@@ -4,25 +4,29 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.2.0 - 2026-05-07
+
+Native JupyterLab as a first-class concurrent actor: open a notebook
+mid-run and see streaming output, click Stop and the cell terminates,
+click Restart and the kernel comes back ready. Plus the package now ships
+in PyPA src layout and an experimental VS Code extension.
+
 ### Added
 
 - subshell-routed kernel execution (JEP 91 / ipykernel 7+): Hypernote sends `execute_request` with a `subshell_id` so the kernel's main shell stays free to answer concurrent clients (e.g. JupyterLab) — opening a notebook mid-run now renders cells immediately and continues to stream output without waiting for the running cell
 - subshell-aware `POST /api/kernels/{id}/interrupt` override: JupyterLab's Stop button (and `nb.interrupt()`) now terminates a Hypernote-driven cell, raising `KeyboardInterrupt` in the subshell thread via a main-shell `PyThreadState_SetAsyncExc` injection. Falls back to default SIGINT for non-Hypernote-driven kernels.
 - subshell- and nbmodel-aware `POST /api/kernels/{id}/restart` override: JupyterLab's Restart button now leaves the kernel ready to run new cells. Hypernote evicts nbmodel's stale per-kernel client and worker, and clears its cached subshell id, so the next execute rebuilds against the fresh kernel.
 - new browser regression tests for Lab Stop and Lab Restart against subshell-routed cells; new real-kernel unit tests for subshell creation, routing, interrupt latency, and restart cleanup.
-- added a minimal VS Code extension under `vscode-extension/` that opens JupyterLab in a VS Code custom editor or panel
-- added managed local JupyterLab startup for the extension when no configured server is reachable
 
 ### Changed
 
-- package layout migrated to `src/hypernote/` (PyPA src layout). `pyproject.toml` now configures `[tool.hatch.build.targets.wheel] packages = ["src/hypernote"]` and `[tool.ruff] src = ["src", "tests"]`. The `hypernote` import name is unchanged.
+- package layout migrated to `src/hypernote/` (PyPA src layout). `pyproject.toml` now configures `[tool.hatch.build.targets.wheel] packages = ["src/hypernote"]` and `[tool.ruff] src = ["src", "tests"]`. The `hypernote` import name is unchanged — `import hypernote` continues to work.
 - release workflow switched from tag-triggered to `workflow_dispatch` — run `gh workflow run release.yml -f version=X.Y.Z` to release
 
 ### Notes
 
 - subshell routing requires ipykernel 7+ (IPython kernels). Other kernels fall back to the main shell — late-open during a long-running cell will block the JupyterLab UI for those kernels and the subshell-targeted interrupt becomes a no-op (override falls through to SIGINT, which works on the main shell).
-- the extension is intentionally decoupled from Hypernote-specific UI and connects to plain JupyterLab
-- managed extension launches override Jupyter's default frame-ancestor policy so the embedded view can load inside VS Code
+- `PyThreadState_SetAsyncExc`-based interrupt cannot terminate a thread inside a long blocking C call without GIL release (e.g. `requests.get` with no timeout). The `KeyboardInterrupt` only fires once control returns to Python. The interrupt snippet falls back to `os.kill(pid, SIGINT)` internally if the subshell thread cannot be found, so user-visible "Stop did nothing" cases degrade to default SIGINT behavior rather than silent failure.
 
 ## 0.1.3 - 2026-04-03
 
