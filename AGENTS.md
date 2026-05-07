@@ -100,12 +100,14 @@ Default CLI contract:
 - Normalize boundary inputs early. If upstream payloads can arrive in more than one valid shape, accept and normalize them at the adapter boundary rather than assuming a single representation.
 - Prefer unique notebook paths in tests and demos. Browser tests must also use unique JupyterLab workspace URLs.
 - Keep `tmp/` disposable. Durable notes belong in `docs/` or `dev/`, not `tmp/`.
+- Release every version through a PR (CHANGELOG move + version bump + lockfile refresh on a `release/vX.Y.Z` branch), never via direct push to master. The full process is in [dev/release.md](dev/release.md).
 
 ## Read These First
 
 - [SKILL.md](SKILL.md)
 - [docs/README.md](docs/README.md)
 - [dev/README.md](dev/README.md)
+- [dev/release.md](dev/release.md)
 
 ## If You Are Editing...
 
@@ -154,6 +156,13 @@ Default CLI contract:
   - empty and failure states
   - alternate valid input shapes from upstream payloads
   - parity between real helpers and any fake/test-double implementations
+
+### `pyproject.toml` version, `CHANGELOG.md`, or `.github/workflows/release.yml`
+
+- always use the PR-based release process in [dev/release.md](dev/release.md)
+- do not push release-prep commits directly to master, even for a one-line version bump
+- before opening the release PR, confirm `git ls-tree origin/master` shows every file mentioned in the new CHANGELOG section — local-only work must not be claimed in the changelog
+- if you change the release workflow shape (steps, secrets, version source), update [dev/release.md](dev/release.md) in the same PR so the doc stays accurate
 
 ## Verification
 
