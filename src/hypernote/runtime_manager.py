@@ -102,6 +102,11 @@ class RuntimeManager:
         self._gc_task: asyncio.Task | None = None
 
     @property
+    def kernel_manager(self) -> Any:
+        """Public accessor for the underlying Jupyter MultiKernelManager."""
+        return self._kernel_manager
+
+    @property
     def rooms(self) -> dict[str, NotebookRoom]:
         return dict(self._rooms)
 

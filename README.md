@@ -7,8 +7,8 @@
 
 ## What it ships
 
-- notebook-first SDK in `hypernote/sdk.py`
-- agent-first CLI in `hypernote/cli/main.py`
+- notebook-first SDK in `src/hypernote/sdk.py`
+- agent-first CLI in `src/hypernote/cli/main.py`
 - Jupyter server extension for execution and runtime control
 - experimental VS Code extension in `vscode-extension/` for embedding JupyterLab in VS Code
 - notebook-scoped runtime lifecycle with attach, detach, recovery, and stop
@@ -99,7 +99,7 @@ uv sync --extra dev
 ```
 
 ```bash
-uv run ruff check hypernote tests
+uv run ruff check src/hypernote tests
 uv run python -m pytest -q
 ```
 

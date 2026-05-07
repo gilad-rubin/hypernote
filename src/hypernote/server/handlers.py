@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import urllib.parse
 from http import HTTPStatus
@@ -377,6 +378,97 @@ class InterruptHandler(BaseHypernoteHandler):
             self.write_json({"interrupted": True})
         except ValueError as exc:
             raise tornado.web.HTTPError(400, reason=str(exc)) from exc
+
+
+class KernelInterruptInterceptHandler(BaseHypernoteHandler):
+    """Override Jupyter Server's POST /api/kernels/{kernel_id}/interrupt.
+
+    JupyterLab's Stop button posts to this route. The default Jupyter Server
+    handler calls `KernelManager.interrupt_kernel`, which sends a process-wide
+    SIGINT — that does not reach a Hypernote-routed cell running in a kernel
+    subshell. We intercept the route, route subshell-aware interrupt when a
+    Hypernote runtime owns this kernel, and otherwise fall back to the
+    default behavior so non-Hypernote-driven cells (running on the main
+    shell) still get interrupted normally.
+    """
+
+    @tornado.web.authenticated
+    async def post(self, kernel_id: str) -> None:
+        orch = await self.get_orch()
+        if orch._interrupt_via_subshell(kernel_id):  # noqa: SLF001 - intentional
+            self.set_status(204)
+            self.finish()
+            return
+
+        # Default fallback: process-wide SIGINT. Let typed HTTPErrors
+        # (e.g. 404 from MultiKernelManager when kernel_id is unknown)
+        # propagate naturally so Lab keeps its UX for those cases.
+        kernel_manager = self.settings["kernel_manager"]
+        await _ensure_async(kernel_manager.interrupt_kernel(kernel_id))
+        self.set_status(204)
+        self.finish()
+
+
+class KernelRestartInterceptHandler(BaseHypernoteHandler):
+    """Override Jupyter Server's POST /api/kernels/{kernel_id}/restart.
+
+    JupyterLab's Restart button posts to this route. The default handler
+    kills the kernel and starts a new one with the same `kernel_id`. The
+    autorestarter's restart callbacks do NOT fire on this explicit-restart
+    path, so without an override Hypernote's cached subshell id and
+    nbmodel's cached kernel client both go stale: the next execute_request
+    sends a `subshell_id` the new kernel does not know, and nbmodel's worker
+    is stuck on a read from a dead socket.
+
+    We do the default restart, then call `cleanup_after_restart` to evict
+    the stale state. The next execute_request through the orchestrator
+    rebuilds everything fresh against the new kernel.
+    """
+
+    @tornado.web.authenticated
+    async def post(self, kernel_id: str) -> None:
+        kernel_manager = self.settings["kernel_manager"]
+        try:
+            await _ensure_async(kernel_manager.restart_kernel(kernel_id))
+        except tornado.web.HTTPError:
+            # Typed HTTP errors (e.g. 404 for unknown kernel) carry status
+            # codes Lab depends on for its UX. Let them propagate.
+            raise
+        except Exception:
+            # Match Jupyter Server's default behavior for unexpected
+            # failures: log the traceback, respond with 500 and a JSON
+            # body shaped the way Lab expects.
+            self.log.exception("Exception restarting kernel %s", kernel_id)
+            self.set_status(500)
+            self.set_header("Content-Type", "application/json")
+            self.write(json.dumps({"message": "Exception restarting kernel", "traceback": ""}))
+            self.finish()
+            return
+
+        # After the kernel restart succeeded, evict our and nbmodel's stale
+        # per-kernel state so the next execute rebuilds against the new
+        # kernel process.
+        from hypernote.server.subshell import cleanup_after_restart
+
+        orch = await self.get_orch()
+        try:
+            cleanup_after_restart(orch._stack, kernel_id)  # noqa: SLF001 - intentional
+        except Exception:
+            # Cleanup is best-effort; do not fail the restart itself.
+            self.log.exception("cleanup_after_restart failed for kernel %s", kernel_id)
+
+        # Match Jupyter Server's default restart response: the kernel model.
+        model = await _ensure_async(kernel_manager.kernel_model(kernel_id))
+        self.set_status(200)
+        self.set_header("Content-Type", "application/json")
+        self.write(json.dumps(model, default=str))
+        self.finish()
+
+
+async def _ensure_async(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 class CellAttributionHandler(BaseHypernoteHandler):
