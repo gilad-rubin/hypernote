@@ -379,6 +379,41 @@ class InterruptHandler(BaseHypernoteHandler):
             raise tornado.web.HTTPError(400, reason=str(exc)) from exc
 
 
+class KernelInterruptInterceptHandler(BaseHypernoteHandler):
+    """Override Jupyter Server's POST /api/kernels/{kernel_id}/interrupt.
+
+    JupyterLab's Stop button posts to this route. The default Jupyter Server
+    handler calls `KernelManager.interrupt_kernel`, which sends a process-wide
+    SIGINT — that does not reach a Hypernote-routed cell running in a kernel
+    subshell. We intercept the route, route subshell-aware interrupt when a
+    Hypernote runtime owns this kernel, and otherwise fall back to the
+    default behavior so non-Hypernote-driven cells (running on the main
+    shell) still get interrupted normally.
+    """
+
+    @tornado.web.authenticated
+    async def post(self, kernel_id: str) -> None:
+        orch = await self.get_orch()
+        if orch._interrupt_via_subshell(kernel_id):  # noqa: SLF001 - intentional
+            self.set_status(204)
+            self.finish()
+            return
+
+        kernel_manager = self.settings["kernel_manager"]
+        try:
+            await _ensure_async(kernel_manager.interrupt_kernel(kernel_id))
+        except KeyError as exc:
+            raise tornado.web.HTTPError(404, reason=f"Kernel {kernel_id} not found") from exc
+        self.set_status(204)
+        self.finish()
+
+
+async def _ensure_async(value: Any) -> Any:
+    if hasattr(value, "__await__"):
+        return await value
+    return value
+
+
 class CellAttributionHandler(BaseHypernoteHandler):
     @tornado.web.authenticated
     async def get(self, notebook_id: str, cell_id: str) -> None:

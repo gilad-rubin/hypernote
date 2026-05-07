@@ -23,6 +23,7 @@ from hypernote.runtime_manager import RuntimeManager, RuntimeState
 from hypernote.server.subshell import (
     ensure_subshell,
     install_subshell_routing,
+    interrupt_subshell,
     register_restart_hook,
 )
 
@@ -527,7 +528,13 @@ class ExecutionOrchestrator:
         actor_type: ActorType,
     ) -> None:
         room = await self._runtime_mgr.ensure_room(notebook_id)
-        await self._runtime_mgr.interrupt_runtime(room.room_id)
+        # If the kernel is running a Hypernote-driven cell on a subshell,
+        # process-wide SIGINT does not reach it. Send a subshell-targeted
+        # interrupt via the kernel's main shell instead.
+        if not self._interrupt_via_subshell(room.kernel_id):
+            await self._runtime_mgr.interrupt_runtime(room.room_id)
+        else:
+            self._runtime_mgr.touch_activity(room.room_id)
         await self._ledger.create_job(
             notebook_id=notebook_id,
             actor_id=actor_id,
@@ -535,6 +542,33 @@ class ExecutionOrchestrator:
             action=JobAction.INTERRUPT,
             runtime_id=room.room_id,
         )
+
+    def _interrupt_via_subshell(self, kernel_id: str | None) -> bool:
+        """Return True iff a subshell-targeted interrupt was sent."""
+        if kernel_id is None:
+            return False
+        get_client = getattr(self._stack, "_get_client", None)
+        if get_client is None:
+            return False
+        try:
+            client = get_client(kernel_id)
+        except Exception:
+            logger.debug("could not resolve kernel client for %s", kernel_id, exc_info=True)
+            return False
+        subshell_id = getattr(client, "_hypernote_subshell_id", None)
+        if subshell_id is None:
+            return False
+        try:
+            interrupt_subshell(client, subshell_id)
+        except Exception:
+            logger.exception("subshell interrupt failed for kernel %s", kernel_id)
+            return False
+        logger.info(
+            "sent subshell-targeted interrupt to kernel %s subshell %s",
+            kernel_id,
+            subshell_id,
+        )
+        return True
 
     async def get_runtime_status(self, notebook_id: str) -> dict[str, Any]:
         return await self._runtime_mgr.get_runtime_status(notebook_id)

@@ -162,6 +162,61 @@ def has_subshell(client: Any) -> bool:
     return getattr(client, _SUBSHELL_ID_ATTR, None) is not None
 
 
+def interrupt_subshell(client: Any, subshell_id: str) -> None:
+    """Raise KeyboardInterrupt in the subshell's thread.
+
+    Background: ipykernel 7.2's `interrupt_request` ignores `subshell_id` and
+    just calls `os.kill(pid, SIGINT)`, which only interrupts the kernel's main
+    thread. Subshells run in their own threads with their own asyncio loops,
+    so a process-wide SIGINT does not affect them. JEP 91 specifies
+    per-subshell interrupt as a future direction; until ipykernel implements
+    it, we do this ourselves.
+
+    The trick: while a subshell is busy executing user code, the kernel's
+    main shell is idle. We send a small Python snippet on the main shell that
+    looks up the subshell's thread by name (`subshell-<id>`) and calls
+    `ctypes.pythonapi.PyThreadState_SetAsyncExc(thread_id, KeyboardInterrupt)`.
+    CPython raises that exception in the target thread at the next bytecode
+    boundary, terminating the running cell.
+
+    `PyThreadState_SetAsyncExc` is documented as "use with care" — it can
+    leave C-extension state inconsistent if the target thread is mid-call
+    into a C extension. For interrupting Python-level cells this is
+    acceptable; production-grade kernel hardening would want an upstream
+    ipykernel fix that signals subshells natively.
+
+    The snippet is sent as an ordinary `execute_request` on the main shell
+    (no `subshell_id`), bypassing the routing patch installed by
+    `install_subshell_routing` by building the message and sending via the
+    shell channel directly.
+    """
+    snippet = (
+        "import ctypes as _ctypes\n"
+        "import threading as _threading\n"
+        f"_target_name = 'subshell-{subshell_id}'\n"
+        "_target = None\n"
+        "for _t in _threading.enumerate():\n"
+        "    if _t.name == _target_name:\n"
+        "        _target = _t\n"
+        "        break\n"
+        "if _target is not None:\n"
+        "    _ctypes.pythonapi.PyThreadState_SetAsyncExc(\n"
+        "        _ctypes.c_ulong(_target.ident),\n"
+        "        _ctypes.py_object(KeyboardInterrupt),\n"
+        "    )\n"
+    )
+    content = {
+        "code": snippet,
+        "silent": True,
+        "store_history": False,
+        "user_expressions": {},
+        "allow_stdin": False,
+        "stop_on_error": True,
+    }
+    msg = client.session.msg("execute_request", content)  # main shell, no subshell_id
+    client.shell_channel.send(msg)
+
+
 def register_restart_hook(kernel_manager: Any, kernel_id: str, client: Any) -> None:
     """Register a Jupyter kernel-restart callback that resets subshell state.
 

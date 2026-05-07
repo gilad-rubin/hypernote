@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from jupyter_server.extension.application import ExtensionApp
+from tornado.web import URLSpec
 
 from hypernote.actor_ledger import MemoryLedger
 from hypernote.execution_orchestrator import ExecutionOrchestrator, SharedNotebookAccessor
@@ -13,6 +14,7 @@ from hypernote.server.handlers import (
     InterruptHandler,
     JobHandler,
     JobsHandler,
+    KernelInterruptInterceptHandler,
     NotebookCellClearOutputsHandler,
     NotebookCellHandler,
     NotebookCellMoveHandler,
@@ -60,6 +62,23 @@ class HypernoteExtension(ExtensionApp):
             notebook_accessor,
         )
         self.settings["hypernote_orchestrator"] = self._orchestrator
+
+        # Override Jupyter Server's default kernel-interrupt route. JupyterLab's
+        # Stop button posts to this path, and the default handler sends a
+        # process-wide SIGINT that cannot reach a Hypernote-routed cell on a
+        # subshell. Insert at index 0 so this rule wins over Jupyter Server's
+        # registration.
+        self._install_interrupt_intercept()
+
+    def _install_interrupt_intercept(self) -> None:
+        web_app = self.serverapp.web_app
+        kwargs = {"get_orchestrator": self._get_orchestrator}
+        rule = URLSpec(
+            r"/api/kernels/(?P<kernel_id>[^/]+)/interrupt",
+            KernelInterruptInterceptHandler,
+            kwargs,
+        )
+        web_app.wildcard_router.rules.insert(0, rule)
 
     def initialize_handlers(self) -> None:
         kwargs = {"get_orchestrator": self._get_orchestrator}

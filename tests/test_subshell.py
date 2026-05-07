@@ -26,6 +26,7 @@ from hypernote.server.subshell import (
     ensure_subshell,
     has_subshell,
     install_subshell_routing,
+    interrupt_subshell,
     register_restart_hook,
     reset_subshell_state,
 )
@@ -183,6 +184,39 @@ class _StubKernelManager:
 
     def add_restart_callback(self, kernel_id, callback, event="restart"):
         self.callbacks.append((kernel_id, callback, event))
+
+
+async def test_interrupt_subshell_terminates_busy_cell(kernel_client):
+    """The point of this test: ipykernel's interrupt_request ignores subshell_id
+    and only interrupts the main thread. We work around that by raising
+    KeyboardInterrupt in the subshell thread via PyThreadState_SetAsyncExc.
+    """
+    subshell_id = await ensure_subshell(kernel_client)
+    assert subshell_id is not None
+    install_subshell_routing(kernel_client)
+
+    long_code = (
+        "import time\n"
+        "for i in range(20):\n"
+        "    time.sleep(1)\n"
+        "print('did NOT interrupt')\n"
+    )
+    exec_msg_id = kernel_client.execute(long_code, allow_stdin=False)
+    await _wait_for_iopub_busy(kernel_client, exec_msg_id, timeout=5.0)
+
+    interrupt_start = time.monotonic()
+    interrupt_subshell(kernel_client, subshell_id)
+
+    exec_reply = await _read_until_parent(
+        kernel_client.shell_channel, exec_msg_id, timeout=5.0
+    )
+    interrupt_elapsed = time.monotonic() - interrupt_start
+
+    assert exec_reply["content"]["status"] == "error"
+    assert exec_reply["content"].get("ename") == "KeyboardInterrupt"
+    assert interrupt_elapsed < 3.0, (
+        f"interrupt took {interrupt_elapsed:.2f}s — should be sub-second"
+    )
 
 
 async def test_register_restart_hook_clears_subshell_on_restart(kernel_client):
