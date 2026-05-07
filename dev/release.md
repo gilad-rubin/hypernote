@@ -40,9 +40,17 @@ $EDITOR CHANGELOG.md
 
 ```bash
 # 3. version bump
+# macOS (BSD sed):
 sed -i '' -E "0,/^version = \".*\"/s//version = \"$VERSION\"/" pyproject.toml
+# Linux (GNU sed) — note: no quoted empty string after -i:
+#   sed -i -E "0,/^version = \".*\"/s//version = \"$VERSION\"/" pyproject.toml
 uv lock
 ```
+
+The release workflow itself runs on `ubuntu-latest` and uses the GNU
+form. If you prefer not to remember which sed you have, edit
+`pyproject.toml` by hand — the only change is the `version = "..."`
+line.
 
 ```bash
 # 4. PR
@@ -65,18 +73,26 @@ gh workflow run release.yml -f version=$VERSION -f publish_to_pypi=true -f creat
 gh run list --workflow=release.yml --limit 1
 ```
 
-The release workflow then:
+The release workflow then, in order (matches
+[`.github/workflows/release.yml`](../.github/workflows/release.yml)):
 
-1. Validates the version string is semver-shaped.
-2. Re-runs `sed` on `pyproject.toml` against the merge commit (no-op if PR already bumped it).
-3. Builds wheel + sdist via `uv build`.
-4. Verifies the wheel installs with `uv run --isolated --no-project --with dist/*.whl python -c "import hypernote; print('ok')"`.
-5. Runs the full test suite under `--extra dev`, including Playwright with `--with-deps chromium`.
-6. Creates and pushes the `vX.Y.Z` git tag.
-7. Creates the GitHub release.
-8. Publishes wheel + sdist to PyPI under `PYPI_API_TOKEN` (configured as a GitHub Actions secret).
+1. **Validates** the version string is semver-shaped.
+2. **Re-runs the version bump** on `pyproject.toml` against the merge commit (no-op if the PR already bumped it; if it does change anything it runs `uv lock`, commits, and pushes back to the branch the workflow ran on).
+3. **Creates and pushes the `vX.Y.Z` git tag.** The tag is pushed *before* build and tests — so a tag exists even if a later step fails. If a release fails after this point, see "If something is wrong after publish" below for tag cleanup.
+4. **Builds** wheel + sdist via `uv build`.
+5. **Verifies the wheel** installs with `uv run --isolated --no-project --with dist/*.whl python -c "import hypernote; print('ok')"`.
+6. **Uploads the build artifacts** for the publish job.
+7. **Runs the full test suite** under `--extra dev`, including Playwright with `--with-deps chromium`.
+8. **Creates the GitHub release** from the tag.
+9. **Publishes** wheel + sdist to PyPI under `PYPI_API_TOKEN` (configured as a GitHub Actions secret).
 
 Past releases took ~2-3 minutes end-to-end.
+
+**Implication of the early-tag order:** if the build, verify, or test
+step fails, the `vX.Y.Z` tag is already on origin. Either delete the
+tag (`git push origin :refs/tags/vX.Y.Z` and `git tag -d vX.Y.Z`) and
+re-run after the fix, or roll forward to the next patch as if the bad
+version had been published.
 
 ## Verifying the release landed
 
