@@ -43,18 +43,41 @@ Hypernote rejects silent reuse. Stop or restart the runtime to pick up the new k
 - open or closed JupyterLab tabs must not change correctness
 - opening a notebook mid-execution should show already-produced output immediately
 - late-open should continue streaming without restarting or duplicating execution
+- JupyterLab's Stop button must terminate a Hypernote-driven cell
+- JupyterLab's Restart must leave the kernel ready to run new cells
 - clients must not treat job history or attribution as durable across runtime stop or server restart
 
 ## Concurrent kernel access
 
-Hypernote routes its `execute_request` messages through an ipykernel subshell
-so the kernel's main shell stays unblocked during long cells. This is what
-lets a JupyterLab tab opened mid-run answer its own `kernel_info_request` and
-render the notebook UI without waiting for the cell to finish.
+Hypernote and JupyterLab share one notebook session and one kernel.
+Hypernote-driven cells run in a per-kernel subshell so they do not block
+the kernel's main shell — that is what lets a JupyterLab tab opened
+mid-run answer its own `kernel_info_request` and render the notebook UI
+while a cell is still executing. See `dev/current-architecture.md` for
+the full mechanism.
+
+Native JupyterLab toolbar/keyboard actions are wired transparently:
+
+- **Stop / interrupt** — Hypernote's extension overrides
+  `POST /api/kernels/{id}/interrupt`. When a Hypernote runtime owns the
+  kernel, the override raises `KeyboardInterrupt` in the subshell thread
+  via `PyThreadState_SetAsyncExc`. For non-Hypernote kernels it falls
+  back to the default `KernelManager.interrupt_kernel` (process SIGINT).
+- **Restart** — Hypernote's extension overrides
+  `POST /api/kernels/{id}/restart`. After the kernel process restarts the
+  override evicts nbmodel's stale kernel client + worker and clears the
+  cached subshell id. The next execute rebuilds against the fresh kernel.
+- **Run cell from Lab** — Lab's `notebook:run-cell` posts an ordinary
+  `execute_request` on the kernel's main shell (no `subshell_id`), which
+  is the unblocked side. It runs concurrently with whatever Hypernote is
+  doing on the subshell. Because they share `globals()`, take care if
+  agent and human manipulate the same variables simultaneously.
 
 Subshells are a kernel-side feature (ipykernel 7+, JEP 91). For non-IPython
 kernels Hypernote falls back to the main shell; late-open during a
-long-running cell will block the JupyterLab UI for those kernels.
+long-running cell will block the JupyterLab UI for those kernels and the
+subshell-targeted interrupt is a no-op (the route override falls through
+to SIGINT).
 
 ## Runtime states
 

@@ -218,21 +218,78 @@ def interrupt_subshell(client: Any, subshell_id: str) -> None:
 
 
 def register_restart_hook(kernel_manager: Any, kernel_id: str, client: Any) -> None:
-    """Register a Jupyter kernel-restart callback that resets subshell state.
+    """Register an autorestarter callback that resets Hypernote subshell state.
 
     Idempotent per (client, kernel_id) — installs at most once.
 
-    The cached `subshell_id` does not survive a kernel process restart. nbmodel
-    keeps its kernel client cached by `kernel_id` across autorestarts, so
-    without this hook a stale id keeps getting injected into execute_request
-    headers against a kernel that no longer recognizes it.
+    Note: this only fires on the autorestarter's unexpected-death detection.
+    Explicit restart via `POST /api/kernels/{id}/restart` does not fire
+    these callbacks; that path is handled by the
+    `KernelRestartInterceptHandler`, which calls `cleanup_after_restart`.
     """
     if getattr(client, _RESTART_HOOK_ATTR, False):
         return
 
     def on_restart() -> None:
-        logger.info("kernel %s restarted; resetting Hypernote subshell state", kernel_id)
+        logger.info("kernel %s autorestarted; resetting Hypernote subshell state", kernel_id)
         reset_subshell_state(client)
 
     kernel_manager.add_restart_callback(kernel_id, on_restart)
     client._hypernote_restart_hook_installed = True  # noqa: SLF001 - intentional patch attr
+
+
+def cleanup_after_restart(execution_stack: Any, kernel_id: str) -> None:
+    """Tear down nbmodel and Hypernote state for a kernel that was just restarted.
+
+    Called from the explicit-restart route override after the kernel process
+    has been killed and a new one started under the same `kernel_id`.
+
+    nbmodel keeps a kernel client and an asyncio worker task per kernel_id.
+    After restart the old client's ZMQ channels point to the dead process and
+    the worker is stuck on a read from a dead socket. Without eviction the
+    next execute would queue behind the stuck worker and never run.
+
+    We:
+      1. Cancel and remove the worker task.
+      2. Stop channels on the cached client and remove it.
+      3. Reset Hypernote's subshell-id cache on the (now removed) client so
+         the next run builds a fresh subshell on the new kernel.
+    """
+    workers = getattr(execution_stack, "_ExecutionStack__workers", None)
+    if workers is not None:
+        worker = workers.pop(kernel_id, None)
+        if worker is not None and not worker.done():
+            try:
+                worker.cancel()
+            except Exception:
+                logger.debug("could not cancel nbmodel worker", exc_info=True)
+
+    clients = getattr(execution_stack, "_ExecutionStack__kernel_clients", None)
+    if clients is not None:
+        client = clients.pop(kernel_id, None)
+        if client is not None:
+            try:
+                client.stop_channels()
+            except Exception:
+                logger.debug("could not stop_channels on stale client", exc_info=True)
+            reset_subshell_state(client)
+            # Drop the routing-installed flag so the next client (built fresh
+            # by nbmodel's _get_client) gets a clean install.
+            for attr in (_ROUTING_ATTR, _RESTART_HOOK_ATTR):
+                if hasattr(client, attr):
+                    try:
+                        delattr(client, attr)
+                    except Exception:
+                        pass
+
+    tasks = getattr(execution_stack, "_ExecutionStack__tasks", None)
+    if tasks is not None:
+        tasks.pop(kernel_id, None)
+    results = getattr(execution_stack, "_ExecutionStack__execution_results", None)
+    if results is not None:
+        results.pop(kernel_id, None)
+    pending = getattr(execution_stack, "_ExecutionStack__pending_inputs", None)
+    if pending is not None:
+        pending.pop(kernel_id, None)
+
+    logger.info("cleared Hypernote/nbmodel state for restarted kernel %s", kernel_id)

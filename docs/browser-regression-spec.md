@@ -74,6 +74,12 @@ Notebook edits and execution must use one logical document truth, regardless of 
 - New output continues to stream after the notebook is opened.
 - Opening late does not restart execution, duplicate output, or change runtime/job identity.
 
+### Native JupyterLab kernel-action correctness
+
+- JupyterLab's Stop button (or the `notebook:interrupt-kernel` keyboard shortcut) terminates a Hypernote-driven cell with `KeyboardInterrupt`. The job moves from `running` to `failed` within ~1 second of the click and the cell shows the traceback.
+- JupyterLab's Restart button (or `notebook:restart-kernel`) leaves the kernel ready to run new cells: a subsequent SDK `cell.run()` against the restarted kernel succeeds rather than hanging on a stale nbmodel worker.
+- Both actions go through the standard Lab routes (`POST /api/kernels/{id}/interrupt` and `POST /api/kernels/{id}/restart`); Hypernote intercepts those routes server-side, so no Lab frontend extension is required.
+
 ## End-to-End Scenarios
 
 ### Scenario A: Closed notebook
@@ -114,6 +120,23 @@ Notebook edits and execution must use one logical document truth, regardless of 
 
 1. Run a pre-existing code cell.
 2. Verify prior execution behavior still works exactly as before.
+
+### Scenario F: Lab Stop button on a Hypernote-driven cell
+
+1. Insert a long-running streaming cell through the SDK and start `cell.run()`.
+2. Open the notebook in JupyterLab.
+3. Wait until streamed output is visible in the cell.
+4. Issue the `notebook:interrupt-kernel` command (the same backend as the Stop toolbar button).
+5. Verify the job transitions from `running` to `failed` within a couple of seconds.
+6. Verify the cell content shows a `KeyboardInterrupt` traceback.
+
+### Scenario G: Lab Restart button leaves the kernel runnable
+
+1. Insert a code cell and run it through the SDK; verify success.
+2. Open the notebook in JupyterLab.
+3. POST to `/api/kernels/{kernel_id}/restart` (the same route the Restart toolbar button hits).
+4. Insert a new code cell and run it through the SDK.
+5. Verify the second run completes successfully (proves Hypernote's restart cleanup ran and nbmodel rebuilt against the fresh kernel).
 
 ## Fast, Parallel, Reliable Test Strategy
 
@@ -205,5 +228,8 @@ The current implementation has already shown these behaviors in manual validatio
 
 - open-tab streaming: the browser observed new output while the job was still `running`
 - late-open streaming: the browser showed already-produced output immediately on first render, then later output continued to appear
+- Lab Stop button: a Hypernote-driven streaming cell terminated with `KeyboardInterrupt` within ~1s of the toolbar click
+- Lab Restart button: subsequent `cell.run()` after a Lab-issued kernel restart succeeded rather than hanging
 
-These observations should be converted into checked-in regression tests so the behavior stays stable over time.
+All four behaviors are now covered by checked-in regression tests in
+[tests/test_browser_regression.py](../tests/test_browser_regression.py).

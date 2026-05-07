@@ -36,11 +36,14 @@ Hypernote owns a thin control plane:
 - HTTP handlers in [src/hypernote/server/handlers.py](src/hypernote/server/handlers.py)
 - Jupyter extension wiring in [src/hypernote/server/extension.py](src/hypernote/server/extension.py)
 - ephemeral job and attribution ledger in [src/hypernote/actor_ledger.py](src/hypernote/actor_ledger.py)
+- subshell-aware execute/interrupt/restart in [src/hypernote/server/subshell.py](src/hypernote/server/subshell.py)
 - optional VS Code embedding surface in [vscode-extension/src/extension.ts](vscode-extension/src/extension.ts)
 
 Core rule: notebook edits and execution must operate on one logical document truth whether JupyterLab is closed, already open, or opened mid-run.
 
 Lifecycle rule: notebook contents and outputs persist through Jupyter's `.ipynb` model, but Hypernote's runtime state, job records, and cell attribution are intentionally in-memory and notebook-scoped.
+
+Concurrent-actor rule: JupyterLab and Hypernote share one notebook session and one kernel. Hypernote-driven cells run in an ipykernel subshell so the kernel's main shell stays responsive to native Lab actions. Hypernote's extension overrides `/api/kernels/{id}/interrupt` and `/api/kernels/{id}/restart` so Lab's Stop and Restart toolbar buttons reach the subshell-routed cell or perform the right cleanup. See [dev/current-architecture.md](dev/current-architecture.md) for the full mechanism.
 
 ## Shipped Surface
 

@@ -23,6 +23,7 @@ import pytest
 from jupyter_client import AsyncKernelManager
 
 from hypernote.server.subshell import (
+    cleanup_after_restart,
     ensure_subshell,
     has_subshell,
     install_subshell_routing,
@@ -217,6 +218,71 @@ async def test_interrupt_subshell_terminates_busy_cell(kernel_client):
     assert interrupt_elapsed < 3.0, (
         f"interrupt took {interrupt_elapsed:.2f}s — should be sub-second"
     )
+
+
+def test_cleanup_after_restart_evicts_nbmodel_state():
+    """After explicit restart, nbmodel's stale per-kernel state is cleared so
+    the next execute rebuilds against the new kernel process.
+    """
+    class _StubClient:
+        def __init__(self):
+            self.stop_calls = 0
+            self._hypernote_subshell_id = "old-subshell"
+            self._hypernote_routing_installed = True
+            self._hypernote_restart_hook_installed = True
+
+        def stop_channels(self):
+            self.stop_calls += 1
+
+    class _StubWorker:
+        def __init__(self):
+            self.cancelled = 0
+
+        def done(self):
+            return False
+
+        def cancel(self):
+            self.cancelled += 1
+
+    class _StubStack:
+        def __init__(self, kernel_id, client, worker):
+            # nbmodel's name-mangled attributes: _ExecutionStack__<name>
+            self._ExecutionStack__kernel_clients = {kernel_id: client}
+            self._ExecutionStack__workers = {kernel_id: worker}
+            self._ExecutionStack__tasks = {kernel_id: object()}
+            self._ExecutionStack__execution_results = {kernel_id: object()}
+            self._ExecutionStack__pending_inputs = {kernel_id: object()}
+
+    kernel_id = "k1"
+    client = _StubClient()
+    worker = _StubWorker()
+    stack = _StubStack(kernel_id, client, worker)
+
+    cleanup_after_restart(stack, kernel_id)
+
+    assert worker.cancelled == 1
+    assert client.stop_calls == 1
+    assert kernel_id not in stack._ExecutionStack__kernel_clients
+    assert kernel_id not in stack._ExecutionStack__workers
+    assert kernel_id not in stack._ExecutionStack__tasks
+    assert kernel_id not in stack._ExecutionStack__execution_results
+    assert kernel_id not in stack._ExecutionStack__pending_inputs
+    assert not has_subshell(client)
+    assert not getattr(client, "_hypernote_routing_installed", False)
+    assert not getattr(client, "_hypernote_restart_hook_installed", False)
+
+
+def test_cleanup_after_restart_is_safe_when_kernel_unknown():
+    """If the stack has no entry for this kernel, cleanup is a no-op."""
+
+    class _EmptyStack:
+        _ExecutionStack__kernel_clients: dict = {}
+        _ExecutionStack__workers: dict = {}
+        _ExecutionStack__tasks: dict = {}
+        _ExecutionStack__execution_results: dict = {}
+        _ExecutionStack__pending_inputs: dict = {}
+
+    cleanup_after_restart(_EmptyStack(), "unknown-kernel")  # should not raise
 
 
 async def test_register_restart_hook_clears_subshell_on_restart(kernel_client):

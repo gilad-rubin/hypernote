@@ -15,6 +15,7 @@ from hypernote.server.handlers import (
     JobHandler,
     JobsHandler,
     KernelInterruptInterceptHandler,
+    KernelRestartInterceptHandler,
     NotebookCellClearOutputsHandler,
     NotebookCellHandler,
     NotebookCellMoveHandler,
@@ -73,12 +74,22 @@ class HypernoteExtension(ExtensionApp):
     def _install_interrupt_intercept(self) -> None:
         web_app = self.serverapp.web_app
         kwargs = {"get_orchestrator": self._get_orchestrator}
-        rule = URLSpec(
-            r"/api/kernels/(?P<kernel_id>[^/]+)/interrupt",
-            KernelInterruptInterceptHandler,
-            kwargs,
-        )
-        web_app.wildcard_router.rules.insert(0, rule)
+        # Order matters: insert at index 0 so our routes win over Jupyter
+        # Server's default `/api/kernels/{id}/(restart|interrupt)` handler.
+        rules = [
+            URLSpec(
+                r"/api/kernels/(?P<kernel_id>[^/]+)/interrupt",
+                KernelInterruptInterceptHandler,
+                kwargs,
+            ),
+            URLSpec(
+                r"/api/kernels/(?P<kernel_id>[^/]+)/restart",
+                KernelRestartInterceptHandler,
+                kwargs,
+            ),
+        ]
+        for rule in rules:
+            web_app.wildcard_router.rules.insert(0, rule)
 
     def initialize_handlers(self) -> None:
         kwargs = {"get_orchestrator": self._get_orchestrator}

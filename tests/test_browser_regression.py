@@ -260,6 +260,82 @@ def test_lab_interrupt_button_stops_subshell_routed_cell(page, live_server: Live
         )
 
 
+def test_lab_restart_button_lets_subsequent_cells_run(page, live_server: LiveServer):
+    """A POST to /api/kernels/{id}/restart (Lab's Restart button) cleans up
+    Hypernote's subshell state and nbmodel's stale kernel client, so the
+    next execute succeeds rather than hanging on a dead worker.
+
+    Lab restart bypasses the autorestarter callbacks; without the
+    `KernelRestartInterceptHandler` override the test would either time
+    out (worker stuck on dead channels) or fail with a stale subshell_id.
+    """
+    notebook_path = unique_notebook_path("hypernote-browser-restart")
+    workspace = unique_workspace("restart")
+
+    with httpx.Client(
+        base_url=live_server.base_url,
+        headers=auth_headers(live_server.token),
+        timeout=30,
+    ) as client:
+        create_notebook_sync(
+            client,
+            notebook_path,
+            code_cell("cell-a", "x = 42; print('first')"),
+        )
+
+    nb = hypernote.connect(
+        notebook_path,
+        server=live_server.base_url,
+        token=live_server.token or None,
+    )
+
+    # 1. Run a cell so the runtime, kernel, subshell, and nbmodel client are
+    #    all warmed up.
+    first_job = nb.cells["cell-a"].run()
+    first_job.wait(timeout=30)
+    assert first_job.refresh().status.value == "succeeded"
+
+    # 2. Open Lab so we have a real client attached to the YDoc — restart
+    #    in real life is initiated from a connected Lab tab.
+    page.goto(
+        build_lab_url(live_server.base_url, notebook_path, workspace, live_server.token),
+        wait_until="domcontentloaded",
+    )
+    page.wait_for_selector(".jp-Notebook", state="visible", timeout=30000)
+    _wait_for_cell(page, "x = 42")
+
+    # 3. Trigger the same route Lab's Restart button hits. Done over HTTP
+    #    rather than the keyboard shortcut so the assertion is precise about
+    #    which path is exercised.
+    runtime_status = httpx.get(
+        f"{live_server.base_url}/hypernote/api/notebooks/{notebook_path}/runtime",
+        headers=auth_headers(live_server.token),
+    ).json()
+    kernel_id = runtime_status["kernel_id"]
+    restart_resp = httpx.post(
+        f"{live_server.base_url}/api/kernels/{kernel_id}/restart",
+        headers=auth_headers(live_server.token),
+        timeout=30,
+    )
+    assert restart_resp.status_code == 200, restart_resp.text
+
+    # 4. The decisive step — insert a NEW cell and run it. If restart
+    #    cleanup did not happen, this hangs because nbmodel's worker is
+    #    stuck on the previous (now-dead) kernel client.
+    second = nb.cells.insert_code("print('after-restart')", id="cell-b", after="cell-a")
+    second_job = second.run()
+    second_job.wait(timeout=30)
+    assert second_job.refresh().status.value == "succeeded"
+
+    chunks = []
+    for output in second.outputs:
+        if output.get("output_type") != "stream":
+            continue
+        text = output.get("text", "")
+        chunks.append(text if isinstance(text, str) else "".join(text))
+    assert "after-restart" in "".join(chunks)
+
+
 def _wait_for_cell(page, cell_label: str):
     locator = page.locator(".jp-CodeCell").filter(has_text=cell_label).last
     locator.wait_for(timeout=30000)
