@@ -14,7 +14,7 @@ uv run hypernote create tmp/demo.ipynb
 uv run hypernote ix tmp/demo.ipynb -s 'value = 20 + 22\nprint(value)'
 uv run hypernote status tmp/demo.ipynb --full
 uv run python -m pytest -q
-uv run ruff check hypernote tests
+uv run ruff check src/hypernote tests
 ```
 
 ## Architecture
@@ -28,14 +28,14 @@ Jupyter owns notebook truth:
 
 Hypernote owns a thin control plane:
 
-- public SDK in [hypernote/sdk.py](hypernote/sdk.py)
-- public errors in [hypernote/errors.py](hypernote/errors.py)
-- agent-first CLI in [hypernote/cli/main.py](hypernote/cli/main.py)
-- execution orchestration and shared-document mutation in [hypernote/execution_orchestrator.py](hypernote/execution_orchestrator.py)
-- runtime ownership in [hypernote/runtime_manager.py](hypernote/runtime_manager.py)
-- HTTP handlers in [hypernote/server/handlers.py](hypernote/server/handlers.py)
-- Jupyter extension wiring in [hypernote/server/extension.py](hypernote/server/extension.py)
-- ephemeral job and attribution ledger in [hypernote/actor_ledger.py](hypernote/actor_ledger.py)
+- public SDK in [src/hypernote/sdk.py](src/hypernote/sdk.py)
+- public errors in [src/hypernote/errors.py](src/hypernote/errors.py)
+- agent-first CLI in [src/hypernote/cli/main.py](src/hypernote/cli/main.py)
+- execution orchestration and shared-document mutation in [src/hypernote/execution_orchestrator.py](src/hypernote/execution_orchestrator.py)
+- runtime ownership in [src/hypernote/runtime_manager.py](src/hypernote/runtime_manager.py)
+- HTTP handlers in [src/hypernote/server/handlers.py](src/hypernote/server/handlers.py)
+- Jupyter extension wiring in [src/hypernote/server/extension.py](src/hypernote/server/extension.py)
+- ephemeral job and attribution ledger in [src/hypernote/actor_ledger.py](src/hypernote/actor_ledger.py)
 - optional VS Code embedding surface in [vscode-extension/src/extension.ts](vscode-extension/src/extension.ts)
 
 Core rule: notebook edits and execution must operate on one logical document truth whether JupyterLab is closed, already open, or opened mid-run.
@@ -114,14 +114,14 @@ Default CLI contract:
 - update [docs/vscode-extension.md](docs/vscode-extension.md)
 - update [dev/vscode-extension.md](dev/vscode-extension.md)
 
-### `hypernote/sdk.py` or `hypernote/errors.py`
+### `src/hypernote/sdk.py` or `src/hypernote/errors.py`
 
 - preserve the notebook-first public object model
 - keep public enums and errors stable
 - prefer adding reusable observation helpers on `NotebookStatus` / `CellStatus` over adding CLI-only shaping logic
 - update [docs/sdk.md](docs/sdk.md)
 
-### `hypernote/cli/main.py`
+### `src/hypernote/cli/main.py`
 
 - keep non-TTY output compact by default
 - keep bare `hypernote` as the live dashboard view
@@ -131,7 +131,7 @@ Default CLI contract:
 - keep streaming explicit in non-TTY mode
 - update [docs/cli.md](docs/cli.md)
 
-### `hypernote/execution_orchestrator.py`, `hypernote/runtime_manager.py`, or `hypernote/server/*`
+### `src/hypernote/execution_orchestrator.py`, `src/hypernote/runtime_manager.py`, or `src/hypernote/server/*`
 
 - preserve the single-truth shared-document path
 - verify open-tab and late-open behavior still hold
@@ -166,7 +166,7 @@ Install guidance:
 Minimum checks for most changes:
 
 ```bash
-uv run ruff check hypernote tests
+uv run ruff check src/hypernote tests
 uv run python -m pytest -q
 ```
 

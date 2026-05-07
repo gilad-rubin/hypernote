@@ -44,7 +44,7 @@ JupyterLab tab loading the same notebook), so Lab's notebook UI can finish its
 init handshake and render cells while a Hypernote-driven cell is still
 executing.
 
-See [hypernote/server/subshell.py](../hypernote/server/subshell.py) and
+See [src/hypernote/server/subshell.py](../src/hypernote/server/subshell.py) and
 [tests/test_subshell.py](../tests/test_subshell.py) for the mechanism and the
 load-bearing latency assertion. Subshells require ipykernel 7+ (IPython
 kernels). Other kernels fall back to the main shell; late-open during a

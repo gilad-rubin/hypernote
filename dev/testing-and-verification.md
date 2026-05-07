@@ -12,7 +12,7 @@
 ## Fast checks
 
 ```bash
-uv run ruff check hypernote tests
+uv run ruff check src/hypernote tests
 uv run python -m pytest -q
 ```
 
