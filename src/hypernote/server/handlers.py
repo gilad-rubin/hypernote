@@ -429,12 +429,17 @@ class KernelRestartInterceptHandler(BaseHypernoteHandler):
         kernel_manager = self.settings["kernel_manager"]
         try:
             await _ensure_async(kernel_manager.restart_kernel(kernel_id))
-        except KeyError as exc:
-            raise tornado.web.HTTPError(404, reason=f"Kernel {kernel_id} not found") from exc
-        except Exception as exc:
+        except Exception:
+            # Match Jupyter Server's default behavior: log the traceback,
+            # respond with 500 and a JSON message body. We don't try to
+            # distinguish "kernel not found" from generic failure because
+            # the underlying kernel-manager raises different exception
+            # types across versions; the response shape stays the same.
+            self.log.exception("Exception restarting kernel %s", kernel_id)
             self.set_status(500)
-            self.finish(json.dumps({"message": "Exception restarting kernel", "traceback": ""}))
-            raise tornado.web.HTTPError(500, reason=str(exc)) from exc
+            self.write(json.dumps({"message": "Exception restarting kernel", "traceback": ""}))
+            self.finish()
+            return
 
         # After the kernel restart succeeded, evict our and nbmodel's stale
         # per-kernel state so the next execute rebuilds against the new

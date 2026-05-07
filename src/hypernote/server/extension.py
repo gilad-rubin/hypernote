@@ -26,6 +26,7 @@ from hypernote.server.handlers import (
     RuntimeStopHandler,
     SendStdinHandler,
 )
+from hypernote.server.subshell import validate_nbmodel_internals
 
 NBMODEL_EXTENSION_NAME = "jupyter_server_nbmodel"
 YDOC_EXTENSION_NAME = "jupyter_server_ydoc"
@@ -44,6 +45,7 @@ class HypernoteExtension(ExtensionApp):
         await self._ledger.initialize()
         nbmodel_ext = _get_extension_instance(self.serverapp, NBMODEL_EXTENSION_NAME)
         execution_stack = getattr(nbmodel_ext, "_Extension__execution_stack")
+        validate_nbmodel_internals(execution_stack)
         ydoc_ext = _get_optional_extension_instance(self.serverapp, YDOC_EXTENSION_NAME)
 
         runtime_mgr = RuntimeManager(
@@ -90,6 +92,36 @@ class HypernoteExtension(ExtensionApp):
         ]
         for rule in rules:
             web_app.wildcard_router.rules.insert(0, rule)
+
+        self._verify_route_overrides()
+
+    def _verify_route_overrides(self) -> None:
+        """Fail loud at startup if our route overrides aren't actually winning.
+
+        We rely on inserting at the front of `wildcard_router.rules` to beat
+        Jupyter Server's default `/api/kernels/{id}/(restart|interrupt)`
+        handler. If a future Jupyter Server change moves default routes
+        into a router we don't shadow, our overrides quietly stop working
+        and Lab's Stop / Restart buttons silently regress. Walk the router
+        rules in order, find the first one whose URL pattern matches each
+        probe path, and warn loudly if it isn't ours.
+        """
+        web_app = self.serverapp.web_app
+        probes = (
+            ("/api/kernels/test-kernel-probe/interrupt", KernelInterruptInterceptHandler),
+            ("/api/kernels/test-kernel-probe/restart", KernelRestartInterceptHandler),
+        )
+        for path, expected_cls in probes:
+            matched_handler = _first_matching_handler(web_app.wildcard_router.rules, path)
+            if matched_handler is not expected_cls:
+                self.log.warning(
+                    "Hypernote route override for %s did not resolve to %s "
+                    "(got %r). Lab Stop/Restart against Hypernote-driven "
+                    "cells may silently fall back to default handling.",
+                    path,
+                    expected_cls.__name__,
+                    matched_handler,
+                )
 
     def initialize_handlers(self) -> None:
         kwargs = {"get_orchestrator": self._get_orchestrator}
@@ -162,6 +194,23 @@ class HypernoteExtension(ExtensionApp):
             await self._runtime_mgr.shutdown()
         if hasattr(self, "_ledger"):
             await self._ledger.close()
+
+
+def _first_matching_handler(rules, path: str):
+    """Return the handler class of the first router rule whose pattern matches `path`."""
+    import re as _re
+
+    for rule in rules:
+        matcher = getattr(rule, "matcher", None)
+        regex = getattr(matcher, "regex", None)
+        if regex is None:
+            continue
+        try:
+            if regex.match(path) is not None:
+                return getattr(rule, "target", None)
+        except (TypeError, _re.error):
+            continue
+    return None
 
 
 def _get_extension_instance(serverapp, extension_name: str):

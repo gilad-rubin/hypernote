@@ -23,6 +23,7 @@ import pytest
 from jupyter_client import AsyncKernelManager
 
 from hypernote.server.subshell import (
+    NBMODEL_PRIVATE_ATTRS,
     cleanup_after_restart,
     ensure_subshell,
     has_subshell,
@@ -30,6 +31,7 @@ from hypernote.server.subshell import (
     interrupt_subshell,
     register_restart_hook,
     reset_subshell_state,
+    validate_nbmodel_internals,
 )
 
 
@@ -270,6 +272,40 @@ def test_cleanup_after_restart_evicts_nbmodel_state():
     assert not has_subshell(client)
     assert not getattr(client, "_hypernote_routing_installed", False)
     assert not getattr(client, "_hypernote_restart_hook_installed", False)
+
+
+def test_validate_nbmodel_internals_warns_on_missing_attrs(caplog):
+    """Surface a refactor of jupyter_server_nbmodel as a startup warning.
+
+    Without this, `cleanup_after_restart` silently no-ops when nbmodel
+    renames its name-mangled attributes — the bug returns invisibly.
+    """
+
+    class _BareStack:
+        pass
+
+    with caplog.at_level("WARNING"):
+        validate_nbmodel_internals(_BareStack())
+    messages = [r.message for r in caplog.records]
+    assert any("ExecutionStack is missing expected attrs" in m for m in messages)
+    # All five expected attrs should appear in the warning so debug is easy.
+    for attr in NBMODEL_PRIVATE_ATTRS:
+        assert any(attr in m for m in messages)
+
+
+def test_validate_nbmodel_internals_silent_when_attrs_present(caplog):
+    """No warning when nbmodel internals match expectations."""
+
+    class _CompleteStack:
+        pass
+
+    for attr in NBMODEL_PRIVATE_ATTRS:
+        setattr(_CompleteStack, attr, {})
+
+    with caplog.at_level("WARNING"):
+        validate_nbmodel_internals(_CompleteStack())
+    messages = [r.message for r in caplog.records]
+    assert not any("ExecutionStack is missing" in m for m in messages)
 
 
 def test_cleanup_after_restart_is_safe_when_kernel_unknown():

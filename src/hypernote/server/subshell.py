@@ -54,7 +54,40 @@ logger = logging.getLogger(__name__)
 _SUBSHELL_ID_ATTR = "_hypernote_subshell_id"
 _ROUTING_ATTR = "_hypernote_routing_installed"
 _RESTART_HOOK_ATTR = "_hypernote_restart_hook_installed"
+_ORIGINAL_EXECUTE_ATTR = "_hypernote_original_execute"
 _SUBSHELL_TIMEOUT_SECONDS = 5.0
+
+# Name-mangled attributes Hypernote reaches into on jupyter_server_nbmodel's
+# ExecutionStack. Used by `cleanup_after_restart` and verified at extension
+# startup so a name change in nbmodel surfaces as a startup warning rather
+# than as a silent cleanup no-op.
+NBMODEL_PRIVATE_ATTRS: tuple[str, ...] = (
+    "_ExecutionStack__kernel_clients",
+    "_ExecutionStack__workers",
+    "_ExecutionStack__tasks",
+    "_ExecutionStack__execution_results",
+    "_ExecutionStack__pending_inputs",
+)
+
+
+def validate_nbmodel_internals(execution_stack: Any) -> None:
+    """Log a warning if nbmodel's expected internal attributes are missing.
+
+    `cleanup_after_restart` reaches into name-mangled internals of
+    `jupyter_server_nbmodel.execution_stack.ExecutionStack`. If nbmodel
+    refactors any of those attributes, our cleanup silently no-ops and the
+    "Lab Restart leaves the kernel ready" invariant breaks invisibly. Run
+    this once at extension startup so a missing attribute is surfaced as a
+    loud single warning rather than discovered later via a stuck restart.
+    """
+    missing = [name for name in NBMODEL_PRIVATE_ATTRS if not hasattr(execution_stack, name)]
+    if missing:
+        logger.warning(
+            "jupyter_server_nbmodel.ExecutionStack is missing expected attrs %s; "
+            "Hypernote restart cleanup will silently no-op for those. "
+            "An nbmodel update may have refactored its internals.",
+            missing,
+        )
 
 
 async def ensure_subshell(client: Any) -> str | None:
@@ -110,6 +143,10 @@ def install_subshell_routing(client: Any) -> None:
     """
     if getattr(client, _ROUTING_ATTR, False):
         return
+
+    # Stash the upstream execute so callers / tests can revert if needed.
+    if not hasattr(client, _ORIGINAL_EXECUTE_ATTR):
+        client._hypernote_original_execute = client.execute  # noqa: SLF001 - intentional
 
     def execute_via_subshell(
         code: str,
@@ -181,19 +218,31 @@ def interrupt_subshell(client: Any, subshell_id: str) -> None:
 
     `PyThreadState_SetAsyncExc` is documented as "use with care" — it can
     leave C-extension state inconsistent if the target thread is mid-call
-    into a C extension. For interrupting Python-level cells this is
-    acceptable; production-grade kernel hardening would want an upstream
-    ipykernel fix that signals subshells natively.
+    into a C extension. For pure-Python and most numpy/pandas cells the
+    interrupt fires within a bytecode boundary; cells currently inside a
+    long blocking C call without a Python yield point (e.g. a `requests`
+    call with no timeout, a synchronous DB query) only get interrupted
+    once control returns to Python. Production-grade kernel hardening
+    would want an upstream ipykernel fix that signals subshells natively.
+
+    The snippet is fire-and-forget — we send it on the main shell and do
+    not wait for an execute_reply. If the main shell is currently busy
+    (e.g. a human ran a Lab cell concurrently), the snippet queues behind
+    that work and the interrupt fires once it lands. In Hypernote's normal
+    flow Hypernote routes everything to the subshell, so the main shell is
+    idle and latency is sub-second.
 
     The snippet is sent as an ordinary `execute_request` on the main shell
     (no `subshell_id`), bypassing the routing patch installed by
     `install_subshell_routing` by building the message and sending via the
-    shell channel directly.
+    shell channel directly. ``subshell_id`` is interpolated via ``repr`` so
+    a malformed value cannot escape the string literal as Python code.
     """
+    target_name_literal = repr(f"subshell-{subshell_id}")
     snippet = (
         "import ctypes as _ctypes\n"
         "import threading as _threading\n"
-        f"_target_name = 'subshell-{subshell_id}'\n"
+        f"_target_name = {target_name_literal}\n"
         "_target = None\n"
         "for _t in _threading.enumerate():\n"
         "    if _t.name == _target_name:\n"
