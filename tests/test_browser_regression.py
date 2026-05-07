@@ -174,6 +174,92 @@ def test_late_open_streaming_replays_prior_output_without_restart(page, live_ser
         assert final_text.count(marker) == 1
 
 
+def test_lab_interrupt_button_stops_subshell_routed_cell(page, live_server: LiveServer):
+    """Lab's kernel-interrupt action terminates a Hypernote-driven cell.
+
+    Hypernote routes execute_request through an ipykernel subshell so concurrent
+    clients (Lab) can talk to the kernel mid-run. The trade-off is that
+    process-wide SIGINT does not reach the subshell thread. The Hypernote
+    extension overrides Jupyter Server's /api/kernels/{id}/interrupt route to
+    raise KeyboardInterrupt in the subshell thread via PyThreadState_SetAsyncExc.
+
+    This test proves that a JupyterLab kernel-interrupt action (the same backend
+    as the Stop button) actually stops the cell. We use the I,I keyboard
+    shortcut because it dispatches the same `notebook:interrupt-kernel` command
+    the toolbar button does, and is reliable across Lab versions.
+    """
+    notebook_path = unique_notebook_path("hypernote-browser-interrupt")
+    workspace = unique_workspace("interrupt")
+    cell_id = "long-interrupt"
+    cell_label = f"hypernote-interrupt-{cell_id}"
+
+    with httpx.Client(
+        base_url=live_server.base_url,
+        headers=auth_headers(live_server.token),
+        timeout=30,
+    ) as client:
+        create_notebook_sync(
+            client,
+            notebook_path,
+            code_cell("cell-a", "print(1)"),
+        )
+
+    nb = hypernote.connect(
+        notebook_path,
+        server=live_server.base_url,
+        token=live_server.token or None,
+    )
+    # 60s of streaming; we only need it long enough that the cell is
+    # mid-execute when the interrupt arrives.
+    source = streaming_cell_source(
+        cell_label=cell_label,
+        markers=[f"int-tick-{i}" for i in range(60)] + ["int-final"],
+        delay_seconds=1.0,
+    )
+    inserted = nb.cells.insert_code(source, id=cell_id, after="cell-a")
+
+    job = inserted.run()
+    _wait_for_condition(lambda: _job_status(job) in {"running", "succeeded"}, timeout=10)
+
+    page.goto(
+        build_lab_url(live_server.base_url, notebook_path, workspace, live_server.token),
+        wait_until="domcontentloaded",
+    )
+    page.wait_for_selector(".jp-Notebook", state="visible", timeout=30000)
+    cell = _wait_for_cell(page, cell_label)
+    _wait_for_condition(lambda: "int-tick-2" in _cell_text(cell), timeout=20)
+    assert _job_status(job) == "running", (
+        "job already finished before interrupt could be tested"
+    )
+
+    # Dispatch Lab's kernel-interrupt command via the I,I keyboard shortcut.
+    # Equivalent to clicking the Stop button: both call
+    # `notebook:interrupt-kernel`, which posts to /api/kernels/{id}/interrupt —
+    # the route Hypernote overrides.
+    cell.click()
+    page.keyboard.press("Escape")
+    page.keyboard.press("KeyI")
+    page.keyboard.press("KeyI")
+
+    # Job should transition out of "running" within a couple of seconds.
+    _wait_for_condition(
+        lambda: _job_status(job) in {"failed", "succeeded"},
+        timeout=5,
+    )
+    assert _job_status(job) == "failed", "interrupt did not raise an error in the cell"
+
+    # Cell content should reflect KeyboardInterrupt.
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if "KeyboardInterrupt" in _cell_text(cell):
+            break
+        time.sleep(0.2)
+    else:
+        raise AssertionError(
+            "cell did not show KeyboardInterrupt after job entered 'failed'"
+        )
+
+
 def _wait_for_cell(page, cell_label: str):
     locator = page.locator(".jp-CodeCell").filter(has_text=cell_label).last
     locator.wait_for(timeout=30000)
