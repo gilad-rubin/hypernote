@@ -32,3 +32,20 @@ Jupyter shared document + kernel/session primitives
 - runtime creation must resolve the desired kernel from an explicit override, otherwise the
   notebook metadata kernelspec, otherwise `python3`
 - Hypernote must not silently reuse a live runtime if the notebook now targets a different kernel
+
+## Late-open via kernel subshells
+
+To make "open a notebook mid-run" reliable with native JupyterLab, Hypernote
+routes its own `execute_request` messages through an [ipykernel
+subshell](https://jupyter.org/enhancement-proposals/91-kernel-subshells/kernel-subshells.html).
+A subshell is a separate handler thread on the kernel side; the kernel's main
+shell stays free to answer `kernel_info_request` from any client (e.g. a
+JupyterLab tab loading the same notebook), so Lab's notebook UI can finish its
+init handshake and render cells while a Hypernote-driven cell is still
+executing.
+
+See [hypernote/server/subshell.py](../hypernote/server/subshell.py) and
+[tests/test_subshell.py](../tests/test_subshell.py) for the mechanism and the
+load-bearing latency assertion. Subshells require ipykernel 7+ (IPython
+kernels). Other kernels fall back to the main shell; late-open during a
+long-running cell will block Lab UI for those kernels.

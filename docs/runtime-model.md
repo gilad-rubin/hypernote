@@ -45,6 +45,17 @@ Hypernote rejects silent reuse. Stop or restart the runtime to pick up the new k
 - late-open should continue streaming without restarting or duplicating execution
 - clients must not treat job history or attribution as durable across runtime stop or server restart
 
+## Concurrent kernel access
+
+Hypernote routes its `execute_request` messages through an ipykernel subshell
+so the kernel's main shell stays unblocked during long cells. This is what
+lets a JupyterLab tab opened mid-run answer its own `kernel_info_request` and
+render the notebook UI without waiting for the cell to finish.
+
+Subshells are a kernel-side feature (ipykernel 7+, JEP 91). For non-IPython
+kernels Hypernote falls back to the main shell; late-open during a
+long-running cell will block the JupyterLab UI for those kernels.
+
 ## Runtime states
 
 The public SDK exposes `RuntimeStatus` as a stable enum-backed status surface. Clients should use that instead of inferring state from ad hoc HTTP payloads.

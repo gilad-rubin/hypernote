@@ -108,6 +108,10 @@ def test_late_open_streaming_replays_prior_output_without_restart(page, live_ser
         "late-stream-three",
         "late-stream-four",
         "late-stream-five",
+        "late-stream-six",
+        "late-stream-seven",
+        "late-stream-eight",
+        "late-stream-nine",
         "late-stream-final",
     ]
 
@@ -148,11 +152,20 @@ def test_late_open_streaming_replays_prior_output_without_restart(page, live_ser
     )
     page.wait_for_selector(".jp-Notebook", timeout=30000)
     _wait_for_cell(page, "print(6 * 7)")
+    assert _job_status(job) == "running", (
+        "Lab finished rendering only after the job completed — late-open did not "
+        "actually catch mid-run state. The notebook UI was likely blocked on a "
+        "kernel-info handshake against a busy main shell."
+    )
 
     cell = _wait_for_cell(page, cell_label)
     _wait_for_condition(lambda: markers[0] in _cell_text(cell), timeout=2.5)
+    assert markers[-1] not in _cell_text(cell), (
+        "Final marker already in cell at first render — Lab rendered post-completion, "
+        "not mid-run."
+    )
 
-    job.wait(timeout=30)
+    job.wait(timeout=60)
     _wait_for_condition(lambda: markers[-1] in _cell_text(cell), timeout=15)
 
     final_text = collect_stream_text(inserted.outputs)

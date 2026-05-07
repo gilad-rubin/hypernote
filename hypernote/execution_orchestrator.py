@@ -20,6 +20,11 @@ from pycrdt import Map
 
 from hypernote.actor_ledger import ActorType, Job, JobAction, JobStatus, Ledger
 from hypernote.runtime_manager import RuntimeManager, RuntimeState
+from hypernote.server.subshell import (
+    ensure_subshell,
+    install_subshell_routing,
+    register_restart_hook,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -558,6 +563,19 @@ class ExecutionOrchestrator:
         wait_for_ready = getattr(client, "wait_for_ready", None)
         if wait_for_ready is not None:
             await ensure_async(wait_for_ready(timeout=30))
+
+        # Route Hypernote-driven execute_requests through a kernel subshell so
+        # the kernel's main shell stays free for concurrent clients (e.g. a
+        # JupyterLab tab opened mid-run sending kernel_info_request).
+        subshell_id = await ensure_subshell(client)
+        install_subshell_routing(client)
+        register_restart_hook(self._runtime_mgr.kernel_manager, kernel_id, client)
+        if subshell_id is None:
+            logger.debug(
+                "kernel %s does not support subshells; falling back to main shell. "
+                "Late-open during long cells will block JupyterLab init for this kernel.",
+                kernel_id,
+            )
 
     async def list_cells(self, notebook_id: str) -> list[dict[str, Any]]:
         return await self._notebook.list_cells(notebook_id)
