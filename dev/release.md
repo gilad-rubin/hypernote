@@ -39,17 +39,23 @@ $EDITOR CHANGELOG.md
 ```
 
 ```bash
-# 3. version bump
-# macOS (BSD sed):
-sed -i '' -E "0,/^version = \".*\"/s//version = \"$VERSION\"/" pyproject.toml
-# Linux (GNU sed) — note: no quoted empty string after -i:
-#   sed -i -E "0,/^version = \".*\"/s//version = \"$VERSION\"/" pyproject.toml
+# 3. version bump (portable across macOS and Linux)
+VERSION=$VERSION uv run python - <<'PY'
+import os, pathlib, re
+p = pathlib.Path("pyproject.toml")
+v = os.environ["VERSION"]
+s, n = re.subn(r'^version = ".*"$', f'version = "{v}"', p.read_text(), count=1, flags=re.M)
+if n != 1:
+    raise SystemExit("expected exactly one top-level version line in pyproject.toml")
+p.write_text(s)
+PY
 uv lock
 ```
 
-The release workflow itself runs on `ubuntu-latest` and uses the GNU
-form. If you prefer not to remember which sed you have, edit
-`pyproject.toml` by hand — the only change is the `version = "..."`
+The release workflow runs on `ubuntu-latest` and uses GNU `sed -i -E`
+inline; this Python heredoc is the same edit but works the same way on
+macOS and Linux without remembering which `sed` is installed. Either
+way, the only change to `pyproject.toml` is the top-level `version`
 line.
 
 ```bash
