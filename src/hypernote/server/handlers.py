@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import urllib.parse
 from http import HTTPStatus
@@ -399,11 +400,11 @@ class KernelInterruptInterceptHandler(BaseHypernoteHandler):
             self.finish()
             return
 
+        # Default fallback: process-wide SIGINT. Let typed HTTPErrors
+        # (e.g. 404 from MultiKernelManager when kernel_id is unknown)
+        # propagate naturally so Lab keeps its UX for those cases.
         kernel_manager = self.settings["kernel_manager"]
-        try:
-            await _ensure_async(kernel_manager.interrupt_kernel(kernel_id))
-        except KeyError as exc:
-            raise tornado.web.HTTPError(404, reason=f"Kernel {kernel_id} not found") from exc
+        await _ensure_async(kernel_manager.interrupt_kernel(kernel_id))
         self.set_status(204)
         self.finish()
 
@@ -429,14 +430,17 @@ class KernelRestartInterceptHandler(BaseHypernoteHandler):
         kernel_manager = self.settings["kernel_manager"]
         try:
             await _ensure_async(kernel_manager.restart_kernel(kernel_id))
+        except tornado.web.HTTPError:
+            # Typed HTTP errors (e.g. 404 for unknown kernel) carry status
+            # codes Lab depends on for its UX. Let them propagate.
+            raise
         except Exception:
-            # Match Jupyter Server's default behavior: log the traceback,
-            # respond with 500 and a JSON message body. We don't try to
-            # distinguish "kernel not found" from generic failure because
-            # the underlying kernel-manager raises different exception
-            # types across versions; the response shape stays the same.
+            # Match Jupyter Server's default behavior for unexpected
+            # failures: log the traceback, respond with 500 and a JSON
+            # body shaped the way Lab expects.
             self.log.exception("Exception restarting kernel %s", kernel_id)
             self.set_status(500)
+            self.set_header("Content-Type", "application/json")
             self.write(json.dumps({"message": "Exception restarting kernel", "traceback": ""}))
             self.finish()
             return
@@ -456,12 +460,13 @@ class KernelRestartInterceptHandler(BaseHypernoteHandler):
         # Match Jupyter Server's default restart response: the kernel model.
         model = await _ensure_async(kernel_manager.kernel_model(kernel_id))
         self.set_status(200)
+        self.set_header("Content-Type", "application/json")
         self.write(json.dumps(model, default=str))
         self.finish()
 
 
 async def _ensure_async(value: Any) -> Any:
-    if hasattr(value, "__await__"):
+    if inspect.isawaitable(value):
         return await value
     return value
 

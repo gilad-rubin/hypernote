@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from jupyter_server.extension.application import ExtensionApp
 from tornado.web import URLSpec
 
@@ -37,41 +39,54 @@ class HypernoteExtension(ExtensionApp):
 
     def initialize_settings(self) -> None:
         self._ledger = MemoryLedger()
+        # Re-entrancy guard for `_ensure_initialized`. Tornado is
+        # single-threaded but coroutines interleave at await points; this
+        # event ensures concurrent first-time callers all wait for the
+        # single in-flight initialization rather than each running it.
+        self._init_event: asyncio.Event | None = None
 
     async def _ensure_initialized(self) -> None:
         if hasattr(self, "_orchestrator"):
             return
+        if self._init_event is not None:
+            await self._init_event.wait()
+            return
 
-        await self._ledger.initialize()
-        nbmodel_ext = _get_extension_instance(self.serverapp, NBMODEL_EXTENSION_NAME)
-        execution_stack = getattr(nbmodel_ext, "_Extension__execution_stack")
-        validate_nbmodel_internals(execution_stack)
-        ydoc_ext = _get_optional_extension_instance(self.serverapp, YDOC_EXTENSION_NAME)
+        self._init_event = asyncio.Event()
+        try:
+            await self._ledger.initialize()
+            nbmodel_ext = _get_extension_instance(self.serverapp, NBMODEL_EXTENSION_NAME)
+            execution_stack = getattr(nbmodel_ext, "_Extension__execution_stack")
+            validate_nbmodel_internals(execution_stack)
+            ydoc_ext = _get_optional_extension_instance(self.serverapp, YDOC_EXTENSION_NAME)
 
-        runtime_mgr = RuntimeManager(
-            session_manager=self.settings["session_manager"],
-            kernel_manager=self.settings["kernel_manager"],
-            policy=RuntimePolicy(),
-            on_notebook_stopped=self._ledger.evict_notebook,
-        )
-        await runtime_mgr.start_gc_loop()
+            runtime_mgr = RuntimeManager(
+                session_manager=self.settings["session_manager"],
+                kernel_manager=self.settings["kernel_manager"],
+                policy=RuntimePolicy(),
+                on_notebook_stopped=self._ledger.evict_notebook,
+            )
+            await runtime_mgr.start_gc_loop()
 
-        notebook_accessor = SharedNotebookAccessor(ydoc_ext, self.serverapp.contents_manager)
-        self._runtime_mgr = runtime_mgr
-        self._orchestrator = ExecutionOrchestrator(
-            self._ledger,
-            runtime_mgr,
-            execution_stack,
-            notebook_accessor,
-        )
-        self.settings["hypernote_orchestrator"] = self._orchestrator
+            notebook_accessor = SharedNotebookAccessor(
+                ydoc_ext, self.serverapp.contents_manager
+            )
+            self._runtime_mgr = runtime_mgr
+            self._orchestrator = ExecutionOrchestrator(
+                self._ledger,
+                runtime_mgr,
+                execution_stack,
+                notebook_accessor,
+            )
+            self.settings["hypernote_orchestrator"] = self._orchestrator
 
-        # Override Jupyter Server's default kernel-interrupt route. JupyterLab's
-        # Stop button posts to this path, and the default handler sends a
-        # process-wide SIGINT that cannot reach a Hypernote-routed cell on a
-        # subshell. Insert at index 0 so this rule wins over Jupyter Server's
-        # registration.
-        self._install_interrupt_intercept()
+            # Override Jupyter Server's default kernel-interrupt + restart
+            # routes so Lab's Stop / Restart buttons reach Hypernote-driven
+            # cells. Insert at index 0 of the wildcard router so our rule
+            # matches before the default handler.
+            self._install_interrupt_intercept()
+        finally:
+            self._init_event.set()
 
     def _install_interrupt_intercept(self) -> None:
         web_app = self.serverapp.web_app
@@ -197,7 +212,16 @@ class HypernoteExtension(ExtensionApp):
 
 
 def _first_matching_handler(rules, path: str):
-    """Return the handler class of the first router rule whose pattern matches `path`."""
+    """Return the handler class of the first router rule whose pattern matches `path`.
+
+    Reads `rule.matcher.regex` and `rule.target` directly. These are
+    Tornado-internal attributes (no public stability guarantee), so a
+    Tornado upgrade that renames or restructures them would silently
+    disable `_verify_route_overrides` (it would log spurious warnings
+    without breaking actual routing). If you upgrade Tornado past the
+    pinned version, sanity-check this helper still resolves the routes
+    it should — see `_verify_route_overrides`.
+    """
     import re as _re
 
     for rule in rules:

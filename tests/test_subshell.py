@@ -16,6 +16,7 @@ module exists.
 from __future__ import annotations
 
 import asyncio
+import queue
 import time
 from typing import Callable
 
@@ -36,6 +37,14 @@ from hypernote.server.subshell import (
 
 
 async def _read_until_parent(channel, request_id: str, timeout: float):
+    """Wait for a reply on a kernel client channel matching `request_id`.
+
+    `channel.get_msg(timeout=...)` raises `queue.Empty` when the timeout
+    elapses with no message — that is the normal "keep polling" signal
+    here. Any other exception (closed channel, malformed message) is a
+    real bug and is allowed to propagate so the test fails loud rather
+    than converting it into a late TimeoutError.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         remaining = deadline - time.monotonic()
@@ -44,9 +53,7 @@ async def _read_until_parent(channel, request_id: str, timeout: float):
                 channel.get_msg(timeout=min(remaining, 0.5)),
                 timeout=remaining + 0.5,
             )
-        except (asyncio.TimeoutError, TimeoutError):
-            continue
-        except Exception:
+        except (asyncio.TimeoutError, TimeoutError, queue.Empty):
             continue
         if msg.get("parent_header", {}).get("msg_id") == request_id:
             return msg
@@ -113,9 +120,12 @@ async def test_install_subshell_routing_injects_subshell_id(kernel_client):
     sent_messages: list[dict] = []
     original_send = kernel_client.shell_channel.send
 
-    def capture(msg):
+    def capture(msg, *args, **kwargs):
+        # Forward args/kwargs in case a future jupyter_client passes
+        # extras (e.g. ident, buffers) — tests should not break across
+        # client versions.
         sent_messages.append(msg)
-        return original_send(msg)
+        return original_send(msg, *args, **kwargs)
 
     kernel_client.shell_channel.send = capture
     try:
@@ -312,11 +322,14 @@ def test_cleanup_after_restart_is_safe_when_kernel_unknown():
     """If the stack has no entry for this kernel, cleanup is a no-op."""
 
     class _EmptyStack:
-        _ExecutionStack__kernel_clients: dict = {}
-        _ExecutionStack__workers: dict = {}
-        _ExecutionStack__tasks: dict = {}
-        _ExecutionStack__execution_results: dict = {}
-        _ExecutionStack__pending_inputs: dict = {}
+        def __init__(self) -> None:
+            # Per-instance dicts so concurrent or re-running tests do not
+            # share state through class-level mutable attributes.
+            self._ExecutionStack__kernel_clients: dict = {}
+            self._ExecutionStack__workers: dict = {}
+            self._ExecutionStack__tasks: dict = {}
+            self._ExecutionStack__execution_results: dict = {}
+            self._ExecutionStack__pending_inputs: dict = {}
 
     cleanup_after_restart(_EmptyStack(), "unknown-kernel")  # should not raise
 

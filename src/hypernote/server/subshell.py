@@ -114,6 +114,17 @@ async def ensure_subshell(client: Any) -> str | None:
             )
         except (asyncio.TimeoutError, TimeoutError):
             break
+        except Exception:
+            # The module promises "returns None if the kernel does not
+            # support subshells" — honour that on any non-timeout error
+            # (e.g. zmq socket closed, malformed message) so callers fall
+            # back to the main shell instead of seeing an unhandled
+            # exception.
+            logger.warning(
+                "unexpected error reading subshell create reply; falling back to main shell",
+                exc_info=True,
+            )
+            return None
         if reply.get("parent_header", {}).get("msg_id") != request_id:
             continue
         content = reply.get("content", {})
@@ -199,8 +210,13 @@ def has_subshell(client: Any) -> bool:
     return getattr(client, _SUBSHELL_ID_ATTR, None) is not None
 
 
-def interrupt_subshell(client: Any, subshell_id: str) -> None:
+def interrupt_subshell(client: Any, subshell_id: str) -> str:
     """Raise KeyboardInterrupt in the subshell's thread.
+
+    Returns the `msg_id` of the main-shell snippet so callers can wait for
+    its `execute_reply` if they need to confirm the interrupt actually
+    landed. Returning the id (rather than `None`) lets callers distinguish
+    "send raised" from "send succeeded but reply unknown".
 
     Background: ipykernel 7.2's `interrupt_request` ignores `subshell_id` and
     just calls `os.kill(pid, SIGINT)`, which only interrupts the kernel's main
@@ -239,20 +255,35 @@ def interrupt_subshell(client: Any, subshell_id: str) -> None:
     a malformed value cannot escape the string literal as Python code.
     """
     target_name_literal = repr(f"subshell-{subshell_id}")
+    # Belt-and-suspenders: if the subshell thread cannot be found (stale
+    # cached id, race with restart) or PyThreadState_SetAsyncExc reports
+    # failure (return value != 1), fall back to a process-wide SIGINT in
+    # the snippet itself. SIGINT will interrupt whatever Python code is
+    # running on the main thread (which is just this snippet), so the
+    # only side effect is the snippet itself exiting with
+    # KeyboardInterrupt — and the cell on the subshell either already
+    # received its KeyboardInterrupt or, in the fallback case, will
+    # receive it via the SIGINT path that ipykernel applies to all
+    # threads at safe Python boundaries.
     snippet = (
         "import ctypes as _ctypes\n"
+        "import os as _os\n"
+        "import signal as _signal\n"
         "import threading as _threading\n"
         f"_target_name = {target_name_literal}\n"
-        "_target = None\n"
-        "for _t in _threading.enumerate():\n"
-        "    if _t.name == _target_name:\n"
-        "        _target = _t\n"
-        "        break\n"
+        "_target = next(\n"
+        "    (_t for _t in _threading.enumerate() if _t.name == _target_name),\n"
+        "    None,\n"
+        ")\n"
+        "_handled = False\n"
         "if _target is not None:\n"
-        "    _ctypes.pythonapi.PyThreadState_SetAsyncExc(\n"
+        "    _rv = _ctypes.pythonapi.PyThreadState_SetAsyncExc(\n"
         "        _ctypes.c_ulong(_target.ident),\n"
         "        _ctypes.py_object(KeyboardInterrupt),\n"
         "    )\n"
+        "    _handled = _rv == 1\n"
+        "if not _handled:\n"
+        "    _os.kill(_os.getpid(), _signal.SIGINT)\n"
     )
     content = {
         "code": snippet,
@@ -264,6 +295,7 @@ def interrupt_subshell(client: Any, subshell_id: str) -> None:
     }
     msg = client.session.msg("execute_request", content)  # main shell, no subshell_id
     client.shell_channel.send(msg)
+    return msg["header"]["msg_id"]
 
 
 def register_restart_hook(kernel_manager: Any, kernel_id: str, client: Any) -> None:
@@ -279,11 +311,26 @@ def register_restart_hook(kernel_manager: Any, kernel_id: str, client: Any) -> N
     if getattr(client, _RESTART_HOOK_ATTR, False):
         return
 
+    add_callback = getattr(kernel_manager, "add_restart_callback", None)
+    if add_callback is None:
+        # Custom / minimal kernel managers may not expose autorestarter
+        # callbacks. The explicit-restart route override still gives us
+        # cleanup; the autorestarter case just becomes a no-op for that
+        # deployment. Skip silently rather than raising AttributeError
+        # from inside _ensure_kernel_client_ready.
+        logger.debug(
+            "kernel_manager %r has no add_restart_callback; "
+            "skipping Hypernote autorestart hook for kernel %s",
+            type(kernel_manager).__name__,
+            kernel_id,
+        )
+        return
+
     def on_restart() -> None:
         logger.info("kernel %s autorestarted; resetting Hypernote subshell state", kernel_id)
         reset_subshell_state(client)
 
-    kernel_manager.add_restart_callback(kernel_id, on_restart)
+    add_callback(kernel_id, on_restart)
     client._hypernote_restart_hook_installed = True  # noqa: SLF001 - intentional patch attr
 
 
@@ -329,7 +376,11 @@ def cleanup_after_restart(execution_stack: Any, kernel_id: str) -> None:
                     try:
                         delattr(client, attr)
                     except Exception:
-                        pass
+                        logger.debug(
+                            "could not delete attr %s on stale client",
+                            attr,
+                            exc_info=True,
+                        )
 
     tasks = getattr(execution_stack, "_ExecutionStack__tasks", None)
     if tasks is not None:

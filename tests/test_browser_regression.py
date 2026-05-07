@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import urllib.parse
 
 import httpx
 import pytest
@@ -306,9 +307,12 @@ def test_lab_restart_button_lets_subsequent_cells_run(page, live_server: LiveSer
 
     # 3. Trigger the same route Lab's Restart button hits. Done over HTTP
     #    rather than the keyboard shortcut so the assertion is precise about
-    #    which path is exercised.
+    #    which path is exercised. URL-encode notebook_path so a unique-id
+    #    value containing slashes or other reserved characters does not
+    #    split the path into segments.
+    encoded_notebook = urllib.parse.quote(notebook_path, safe="")
     runtime_status = httpx.get(
-        f"{live_server.base_url}/hypernote/api/notebooks/{notebook_path}/runtime",
+        f"{live_server.base_url}/hypernote/api/notebooks/{encoded_notebook}/runtime",
         headers=auth_headers(live_server.token),
     ).json()
     kernel_id = runtime_status["kernel_id"]
