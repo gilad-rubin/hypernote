@@ -9,15 +9,14 @@ Read these first:
 - [Current Architecture](current-architecture.md)
 - [Module Map](module-map.md)
 - [Testing and Verification](testing-and-verification.md)
+- [Release Process](release.md)
 - [CLI Agent Ergonomics Rollout](cli-agent-ergonomics-rollout.md)
 - [VS Code Extension Notes](vscode-extension.md)
 
-Release path:
-
-- trigger the release workflow from GitHub Actions UI or `gh workflow run release.yml -f version=X.Y.Z`
-- the workflow bumps `pyproject.toml`, syncs `uv.lock`, commits, tags, builds, tests, creates a GitHub release, and publishes to PyPI
-- PyPI auth comes from the GitHub Actions secret `PYPI_API_TOKEN`
-- see [release.yml](../.github/workflows/release.yml)
+Releases: see [Release Process](release.md). Always via PR — release-prep
+commits go through review like feature work. Workflow lives at
+[`.github/workflows/release.yml`](../.github/workflows/release.yml); PyPI
+auth via the `PYPI_API_TOKEN` GitHub Actions secret.
 
 Rules:
 
