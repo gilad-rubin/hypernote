@@ -446,9 +446,17 @@ def _append_warning(report: dict[str, object], warning: str) -> None:
 
 
 def _normalized_host(host: str | None) -> str:
-    if host in {None, "", "localhost"}:
+    if host in {None, "", "localhost", "::1"}:
         return "127.0.0.1"
     return host
+
+
+def _hosts_match(configured_host: str, running_host: str) -> bool:
+    if configured_host == running_host:
+        return True
+    if configured_host in {"0.0.0.0", "::"} or running_host in {"0.0.0.0", "::"}:
+        return True
+    return False
 
 
 def _server_matches_url(server: str, running_server: dict[str, Any]) -> bool:
@@ -458,7 +466,7 @@ def _server_matches_url(server: str, running_server: dict[str, Any]) -> bool:
     running_host = _normalized_host(running.hostname)
     configured_port = configured.port or (443 if configured.scheme == "https" else 8888)
     running_port = running.port or running_server.get("port")
-    return configured_host == running_host and configured_port == running_port
+    return _hosts_match(configured_host, running_host) and configured_port == running_port
 
 
 def _path_overlaps(left: Path, right: Path) -> bool:
@@ -2139,13 +2147,21 @@ def setup_doctor_cmd(ctx: click.Context, path: str | None) -> None:
     report: dict[str, object] = {"server": cfg.server, "hypernote_api": "unreachable"}
     control = _sdk_control(ctx)
     try:
+        report.update(control.get_server_diagnostics())
+        report["hypernote_api"] = "ok"
+    except Exception as exc:  # pragma: no cover - exercised via CLI output
+        report["server_diagnostics_error"] = str(exc)
+
+    try:
         control.list_jobs()
         report["hypernote_api"] = "ok"
         report["jobs_endpoint"] = True
-        report["jupyter_server_nbmodel"] = "ok"
-        report["jupyter_server_ydoc"] = "ok"
     except Exception as exc:  # pragma: no cover - exercised via CLI output
-        report["error"] = str(exc)
+        if report.get("hypernote_api") == "ok":
+            report["jobs_endpoint"] = False
+            report["jobs_error"] = str(exc)
+        else:
+            report["error"] = str(exc)
 
     duplicate_servers = _duplicate_servers_for_workspace(cfg.server, Path.cwd())
     if duplicate_servers:

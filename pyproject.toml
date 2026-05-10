@@ -10,6 +10,7 @@ dependencies = [
     "jupyter-server-ydoc>=1.0",
     "jupyterlab>=4.0",
     "jupyter-collaboration>=3.0",
+    "jupyter-docprovider>=2.0",
     "pycrdt>=0.12",
     "click>=8.0",
     "httpx>=0.27",

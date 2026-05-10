@@ -27,6 +27,7 @@ from hypernote.server.handlers import (
     RuntimeStatusHandler,
     RuntimeStopHandler,
     SendStdinHandler,
+    ServerDiagnosticsHandler,
 )
 from hypernote.server.subshell import validate_nbmodel_internals
 
@@ -44,13 +45,22 @@ class HypernoteExtension(ExtensionApp):
         # event ensures concurrent first-time callers all wait for the
         # single in-flight initialization rather than each running it.
         self._init_event: asyncio.Event | None = None
+        self._init_error: BaseException | None = None
 
     async def _ensure_initialized(self) -> None:
         if hasattr(self, "_orchestrator"):
             return
+        init_error = getattr(self, "_init_error", None)
+        if init_error is not None:
+            raise init_error
         if self._init_event is not None:
             await self._init_event.wait()
-            return
+            init_error = getattr(self, "_init_error", None)
+            if init_error is not None:
+                raise init_error
+            if hasattr(self, "_orchestrator"):
+                return
+            raise RuntimeError("Hypernote extension initialization did not complete")
 
         self._init_event = asyncio.Event()
         try:
@@ -85,8 +95,32 @@ class HypernoteExtension(ExtensionApp):
             # cells. Insert at index 0 of the wildcard router so our rule
             # matches before the default handler.
             self._install_interrupt_intercept()
+        except Exception as exc:
+            self._init_error = exc
+            raise
+        else:
+            self._init_error = None
         finally:
             self._init_event.set()
+
+    def _server_diagnostics(self) -> dict[str, str]:
+        diagnostics: dict[str, str] = {}
+        try:
+            nbmodel_ext = _get_extension_instance(self.serverapp, NBMODEL_EXTENSION_NAME)
+            execution_stack = getattr(nbmodel_ext, "_Extension__execution_stack")
+            validate_nbmodel_internals(execution_stack)
+        except Exception as exc:
+            diagnostics["jupyter_server_nbmodel"] = f"error: {exc}"
+        else:
+            diagnostics["jupyter_server_nbmodel"] = "ok"
+
+        try:
+            _get_extension_instance(self.serverapp, YDOC_EXTENSION_NAME)
+        except Exception as exc:
+            diagnostics["jupyter_server_ydoc"] = f"error: {exc}"
+        else:
+            diagnostics["jupyter_server_ydoc"] = "ok"
+        return diagnostics
 
     def _install_interrupt_intercept(self) -> None:
         web_app = self.serverapp.web_app
@@ -140,8 +174,10 @@ class HypernoteExtension(ExtensionApp):
 
     def initialize_handlers(self) -> None:
         kwargs = {"get_orchestrator": self._get_orchestrator}
+        diagnostics_kwargs = {"get_diagnostics": self._server_diagnostics}
         self.handlers.extend(
             [
+                (r"/hypernote/api/diagnostics", ServerDiagnosticsHandler, diagnostics_kwargs),
                 (
                     r"/hypernote/api/notebooks/(?P<notebook_id>.+)/document",
                     NotebookDocumentHandler,

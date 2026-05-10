@@ -1047,6 +1047,12 @@ def test_setup_doctor_reports_jupyterlab_integration_stack(runner, monkeypatch):
     monkeypatch.setattr(cli_main, "_running_jupyter_servers", lambda: [], raising=False)
 
     class FakeControl:
+        def get_server_diagnostics(self) -> dict:
+            return {
+                "jupyter_server_nbmodel": "ok",
+                "jupyter_server_ydoc": "ok",
+            }
+
         def list_jobs(self) -> dict:
             return {"jobs": []}
 
@@ -1119,6 +1125,52 @@ def test_setup_doctor_warns_about_duplicate_servers_for_same_workspace(
     payload = json.loads(result.output)
     assert payload["duplicate_servers"][0]["port"] == 8889
     assert any("another Jupyter server" in warning for warning in payload["warnings"])
+
+
+def test_setup_doctor_does_not_flag_wildcard_bind_as_duplicate(
+    runner,
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    monkeypatch.setattr(
+        cli_main,
+        "_running_jupyter_servers",
+        lambda: [
+            {
+                "url": "http://0.0.0.0:8888/",
+                "port": 8888,
+                "root_dir": str(tmp_path),
+                "pid": 111,
+            },
+        ],
+    )
+
+    class FakeControl:
+        def get_server_diagnostics(self) -> dict:
+            return {
+                "jupyter_server_nbmodel": "ok",
+                "jupyter_server_ydoc": "ok",
+            }
+
+        def list_jobs(self) -> dict:
+            return {"jobs": []}
+
+        def get_kernelspec(self, kernel_name: str) -> dict:
+            assert kernel_name == "python3"
+            return {"name": "python3", "spec": {"argv": ["/repo/.venv/bin/python", "-m"]}}
+
+        def get_lab_extensions(self) -> list[dict]:
+            return []
+
+    monkeypatch.setattr(cli_main, "_sdk_control", lambda ctx: FakeControl())
+
+    result = runner.invoke(cli, ["setup", "doctor"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert "duplicate_servers" not in payload
 
 
 def test_setup_serve_launches_jupyterlab_with_browser_by_default(

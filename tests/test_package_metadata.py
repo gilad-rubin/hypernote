@@ -13,4 +13,5 @@ def test_default_install_includes_jupyterlab_integration_stack() -> None:
 
     assert "jupyterlab>=4.0" in dependencies
     assert "jupyter-collaboration>=3.0" in dependencies
+    assert "jupyter-docprovider>=2.0" in dependencies
     assert "lab" not in optional_dependencies

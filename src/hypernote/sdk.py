@@ -449,6 +449,16 @@ class _ControlPlane(_SDKMixin):
         payload = response.json()
         return payload if isinstance(payload, list) else []
 
+    def get_server_diagnostics(self) -> dict[str, Any]:
+        response = self._request(
+            "GET",
+            "/hypernote/api/diagnostics",
+            hypernote=True,
+        )
+        _raise_response(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
     def send_job_stdin(self, job_id: str, value: str) -> dict[str, Any]:
         response = self._request(
             "POST",

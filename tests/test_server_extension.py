@@ -53,3 +53,31 @@ async def test_extension_startup_requires_shared_document_extension(monkeypatch)
 
     with pytest.raises(RuntimeError, match="jupyter_server_ydoc"):
         await ext._ensure_initialized()
+
+
+@pytest.mark.asyncio
+async def test_extension_startup_failure_is_replayed(monkeypatch):
+    fake_nbmodel = _FakeNbmodelExtension()
+    fake_nbmodel._Extension__execution_stack = object()
+    ext = HypernoteExtension.__new__(HypernoteExtension)
+    ext._ledger = _FakeLedger()
+    ext._init_event = None
+    ext._init_error = None
+    ext.settings = {"session_manager": object(), "kernel_manager": object()}
+    ext.serverapp = SimpleNamespace(
+        extension_manager=SimpleNamespace(
+            extension_apps={NBMODEL_EXTENSION_NAME: {fake_nbmodel}},
+        ),
+        contents_manager=object(),
+    )
+
+    monkeypatch.setattr(extension_mod, "RuntimeManager", _FakeRuntimeManager)
+    monkeypatch.setattr(HypernoteExtension, "_install_interrupt_intercept", lambda self: None)
+
+    with pytest.raises(RuntimeError, match="jupyter_server_ydoc") as first_error:
+        await ext._ensure_initialized()
+    with pytest.raises(RuntimeError, match="jupyter_server_ydoc") as second_error:
+        await ext._ensure_initialized()
+
+    assert second_error.value is first_error.value
+    assert not hasattr(ext, "_orchestrator")
