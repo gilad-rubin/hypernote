@@ -24,6 +24,6 @@
 ## Release automation
 
 - [.github/workflows/release.yml](../.github/workflows/release.yml)
-  - `workflow_dispatch`-triggered build, GitHub release, and PyPI publish workflow for the `hypernote` package
+  - release-PR-triggered build, GitHub release, and PyPI publish workflow for the `hypernote` package, with `workflow_dispatch` retained as a recovery fallback
 
 There is no separate JupyterLab-side package that owns notebook semantics. JupyterLab is treated as an external notebook surface attached to the same shared-document and execution path.

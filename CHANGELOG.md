@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.3.0 - 2026-05-10
+
+Hypernote is now a JupyterLab-first integration: the default install carries the
+collaboration/docprovider stack, `setup serve` opens Lab by default, and
+`setup doctor` can distinguish API reachability from shared-document and Lab
+frontend health.
+
 ### Changed
 
 - Hypernote is now packaged and documented as a JupyterLab-first integration:
