@@ -30,7 +30,7 @@ uv run hypernote setup serve
 ```
 
 `setup serve` opens JupyterLab by default. Use `--no-browser` when you want the
-same server without opening an Open Lab Tab.
+same server without opening a Lab tab.
 
 If the notebook belongs to another repo, install Hypernote there (`uv add hypernote --dev`)
 and run the same bootstrap command from that repo.

@@ -1062,8 +1062,8 @@ def test_setup_doctor_reports_jupyterlab_integration_stack(runner, monkeypatch):
 
         def get_lab_extensions(self) -> list[dict]:
             return [
-                {"name": "jupyter-collaboration-extension", "enabled": True, "status": "ok"},
-                {"name": "jupyter-docprovider-extension", "enabled": True, "status": "ok"},
+                {"name": "@jupyter/collaboration-extension", "enabled": True, "status": "ok"},
+                {"name": "@jupyter/docprovider-extension", "enabled": True, "status": "ok"},
             ]
 
     monkeypatch.setattr(cli_main, "_sdk_control", lambda ctx: FakeControl())

@@ -55,8 +55,8 @@ DEFAULT_SOURCE_PREVIEW_CHARS = 120
 DEFAULT_OUTPUT_PREVIEW_CHARS = DEFAULT_READ_OUTPUT_CHARS
 DEFAULT_TAIL_OUTPUT_CHARS = DEFAULT_READ_OUTPUT_CHARS
 HOME_NOTEBOOK_LIMIT = 5
-LAB_COLLABORATION_EXTENSION = "jupyter-collaboration-extension"
-LAB_DOCPROVIDER_EXTENSION = "jupyter-docprovider-extension"
+LAB_COLLABORATION_EXTENSION = "@jupyter/collaboration-extension"
+LAB_DOCPROVIDER_EXTENSION = "@jupyter/docprovider-extension"
 REQUIRED_JUPYTERLAB_STACK = (
     ("jupyterlab", "jupyterlab"),
     ("jupyter_collaboration", "jupyter-collaboration"),
