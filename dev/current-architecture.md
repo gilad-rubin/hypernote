@@ -18,10 +18,12 @@ Jupyter shared document + kernel/session primitives
 
 - The SDK is the public semantic center.
 - The CLI is a thin shell over the SDK.
-- `setup serve` is the CLI bootstrap path for starting a local Hypernote-enabled Jupyter server.
+- `setup serve` is the CLI bootstrap path for starting a local Hypernote-enabled JupyterLab server.
 - Notebook reads and writes must go through the shared-document path.
 - Execution must resolve cell source from the same document model the UI sees.
-- JupyterLab is an optional viewer/actor, not a second source of truth.
+- JupyterLab is the supported integration environment. Opening a Lab tab is optional,
+  but Hypernote still runs through the Hypernote-enabled JupyterLab server and shared
+  document path.
 
 ## Important consequences
 

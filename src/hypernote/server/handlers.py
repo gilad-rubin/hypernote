@@ -49,6 +49,16 @@ class BaseHypernoteHandler(APIHandler):
         return urllib.parse.unquote(notebook_id)
 
 
+class ServerDiagnosticsHandler(APIHandler):
+    def initialize(self, get_diagnostics: Callable[[], dict[str, str]]) -> None:
+        self._get_diagnostics = get_diagnostics
+
+    @tornado.web.authenticated
+    async def get(self) -> None:
+        self.set_header("Content-Type", "application/json")
+        self.finish(json.dumps(self._get_diagnostics(), default=str))
+
+
 class ExecuteHandler(BaseHypernoteHandler):
     @tornado.web.authenticated
     async def post(self, notebook_id: str) -> None:

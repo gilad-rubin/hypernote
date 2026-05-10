@@ -1042,7 +1042,138 @@ def test_setup_doctor_reports_default_kernel_launcher(runner, monkeypatch):
     assert payload["default_kernel"] == "/repo/.venv/bin/python"
 
 
-def test_setup_serve_launches_jupyterlab_with_hypernote_extensions(
+def test_setup_doctor_reports_jupyterlab_integration_stack(runner, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    monkeypatch.setattr(cli_main, "_running_jupyter_servers", lambda: [], raising=False)
+
+    class FakeControl:
+        def get_server_diagnostics(self) -> dict:
+            return {
+                "jupyter_server_nbmodel": "ok",
+                "jupyter_server_ydoc": "ok",
+            }
+
+        def list_jobs(self) -> dict:
+            return {"jobs": []}
+
+        def get_kernelspec(self, kernel_name: str) -> dict:
+            assert kernel_name == "python3"
+            return {"name": "python3", "spec": {"argv": ["/repo/.venv/bin/python", "-m"]}}
+
+        def get_lab_extensions(self) -> list[dict]:
+            return [
+                {"name": "@jupyter/collaboration-extension", "enabled": True, "status": "ok"},
+                {"name": "@jupyter/docprovider-extension", "enabled": True, "status": "ok"},
+            ]
+
+    monkeypatch.setattr(cli_main, "_sdk_control", lambda ctx: FakeControl())
+
+    result = runner.invoke(cli, ["setup", "doctor"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["hypernote_api"] == "ok"
+    assert payload["jupyter_server_nbmodel"] == "ok"
+    assert payload["jupyter_server_ydoc"] == "ok"
+    assert payload["jupyterlab"] == "ok"
+    assert payload["jupyter_collaboration"] == "ok"
+    assert payload["jupyter_docprovider"] == "ok"
+
+
+def test_setup_doctor_warns_about_duplicate_servers_for_same_workspace(
+    runner,
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    monkeypatch.setattr(
+        cli_main,
+        "_running_jupyter_servers",
+        lambda: [
+            {
+                "url": "http://127.0.0.1:8888/",
+                "port": 8888,
+                "root_dir": str(tmp_path),
+                "pid": 111,
+            },
+            {
+                "url": "http://127.0.0.1:8889/",
+                "port": 8889,
+                "root_dir": str(tmp_path),
+                "pid": 222,
+            },
+        ],
+    )
+
+    class FakeControl:
+        def list_jobs(self) -> dict:
+            return {"jobs": []}
+
+        def get_kernelspec(self, kernel_name: str) -> dict:
+            assert kernel_name == "python3"
+            return {"name": "python3", "spec": {"argv": ["/repo/.venv/bin/python", "-m"]}}
+
+        def get_lab_extensions(self) -> list[dict]:
+            return []
+
+    monkeypatch.setattr(cli_main, "_sdk_control", lambda ctx: FakeControl())
+
+    result = runner.invoke(cli, ["setup", "doctor"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["duplicate_servers"][0]["port"] == 8889
+    assert any("another Jupyter server" in warning for warning in payload["warnings"])
+
+
+def test_setup_doctor_does_not_flag_wildcard_bind_as_duplicate(
+    runner,
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    monkeypatch.setattr(
+        cli_main,
+        "_running_jupyter_servers",
+        lambda: [
+            {
+                "url": "http://0.0.0.0:8888/",
+                "port": 8888,
+                "root_dir": str(tmp_path),
+                "pid": 111,
+            },
+        ],
+    )
+
+    class FakeControl:
+        def get_server_diagnostics(self) -> dict:
+            return {
+                "jupyter_server_nbmodel": "ok",
+                "jupyter_server_ydoc": "ok",
+            }
+
+        def list_jobs(self) -> dict:
+            return {"jobs": []}
+
+        def get_kernelspec(self, kernel_name: str) -> dict:
+            assert kernel_name == "python3"
+            return {"name": "python3", "spec": {"argv": ["/repo/.venv/bin/python", "-m"]}}
+
+        def get_lab_extensions(self) -> list[dict]:
+            return []
+
+    monkeypatch.setattr(cli_main, "_sdk_control", lambda ctx: FakeControl())
+
+    result = runner.invoke(cli, ["setup", "doctor"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert "duplicate_servers" not in payload
+
+
+def test_setup_serve_launches_jupyterlab_with_browser_by_default(
     runner,
     monkeypatch,
     tmp_path,
@@ -1071,10 +1202,10 @@ def test_setup_serve_launches_jupyterlab_with_hypernote_extensions(
     )
 
     assert result.exit_code == 0
-    assert "Starting Hypernote Jupyter server at http://127.0.0.1:8899" in result.output
+    assert "Starting Hypernote JupyterLab server at http://127.0.0.1:8899" in result.output
     cmd = captured["cmd"]
     assert cmd[:3] == [cli_main.sys.executable, "-m", "jupyterlab"]
-    assert "--no-browser" in cmd
+    assert "--no-browser" not in cmd
     assert "--ServerApp.ip=127.0.0.1" in cmd
     assert "--ServerApp.port=8899" in cmd
     assert f"--ServerApp.root_dir={tmp_path.resolve()}" in cmd
@@ -1085,6 +1216,24 @@ def test_setup_serve_launches_jupyterlab_with_hypernote_extensions(
     assert captured["check"] is False
 
 
+def test_setup_serve_no_browser_suppresses_browser_launch(runner, monkeypatch, tmp_path):
+    monkeypatch.setattr(cli_main.importlib.util, "find_spec", lambda name: object())
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, cwd, check):  # noqa: ANN001
+        captured["cmd"] = cmd
+        captured["cwd"] = cwd
+        captured["check"] = check
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+
+    result = runner.invoke(cli, ["setup", "serve", "--root", str(tmp_path), "--no-browser"])
+
+    assert result.exit_code == 0
+    assert "--no-browser" in captured["cmd"]
+
+
 def test_setup_serve_fails_cleanly_without_jupyterlab(runner, monkeypatch, tmp_path):
     monkeypatch.setattr(cli_main.importlib.util, "find_spec", lambda name: None)
 
@@ -1092,6 +1241,24 @@ def test_setup_serve_fails_cleanly_without_jupyterlab(runner, monkeypatch, tmp_p
 
     assert result.exit_code != 0
     assert "jupyterlab is not installed" in result.output
+
+
+def test_setup_serve_fails_cleanly_without_collaboration_stack(
+    runner,
+    monkeypatch,
+    tmp_path,
+):
+    def find_spec(name: str):
+        if name == "jupyter_collaboration":
+            return None
+        return object()
+
+    monkeypatch.setattr(cli_main.importlib.util, "find_spec", find_spec)
+
+    result = runner.invoke(cli, ["setup", "serve", "--root", str(tmp_path)])
+
+    assert result.exit_code != 0
+    assert "jupyter-collaboration is not installed" in result.output
 
 
 def test_setup_doctor_with_path_reports_runtime_and_kernel_details(runner, monkeypatch):

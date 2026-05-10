@@ -2,33 +2,35 @@
 
 ## Install
 
-Pick the smallest install that matches what you need:
+The default install includes the JupyterLab integration stack Hypernote needs:
+JupyterLab, shared-document support, server-side notebook execution, and the
+collaboration/docprovider frontend packages.
 
 - `hypernote`
-  - notebook-first SDK, CLI, Jupyter server extension, and shared-document execution path
-- `hypernote[lab]`
-  - base install plus JupyterLab collaboration support
+  - SDK, CLI, Hypernote JupyterLab server integration, and shared-document execution path
 - `hypernote[dev]`
-  - base install plus local development, test, lint, and browser-validation tooling
+  - default install plus local development, test, lint, and browser-validation tooling
 
 Examples:
 
 ```bash
 uv sync
-uv sync --extra lab
 uv sync --extra dev
 ```
 
 ## Server prerequisite
 
-Hypernote CLI and SDK talk to a running Jupyter server with the Hypernote extension enabled.
-They do not start Jupyter for you.
+Hypernote CLI and SDK talk to a running Hypernote-enabled JupyterLab server.
+They do not start a server for normal commands.
 
 For the common local path, bootstrap that server with:
 
 ```bash
 uv run hypernote setup serve
 ```
+
+`setup serve` opens JupyterLab by default. Use `--no-browser` when you want the
+same server without opening a Lab tab.
 
 If the notebook belongs to another repo, install Hypernote there (`uv add hypernote --dev`)
 and run the same bootstrap command from that repo.
@@ -76,7 +78,7 @@ print(nb.status(full=True).summary)
 
 Hypernote uses one logical notebook truth. A notebook may be:
 
-- closed
+- not currently open in a Lab tab
 - already open in JupyterLab
 - opened mid-execution
 

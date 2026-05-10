@@ -31,9 +31,11 @@ logger = logging.getLogger(__name__)
 
 
 class SharedNotebookAccessor:
-    """Read and mutate notebook state through the shared YDoc model when available."""
+    """Read and mutate notebook state through the shared YDoc model."""
 
-    def __init__(self, ydoc_extension: Any | None, contents_manager: Any):
+    def __init__(self, ydoc_extension: Any, contents_manager: Any):
+        if ydoc_extension is None:
+            raise RuntimeError("Shared document rooms are unavailable without jupyter_server_ydoc")
         self._ydoc_extension = ydoc_extension
         self._contents_manager = contents_manager
 
@@ -43,9 +45,6 @@ class SharedNotebookAccessor:
         *,
         content: bool = True,
     ) -> dict[str, Any]:
-        if self._ydoc_extension is None:
-            return await ensure_async(self._contents_manager.get(notebook_id, content=content))
-
         if not content:
             return await ensure_async(self._contents_manager.get(notebook_id, content=False))
 
@@ -69,13 +68,11 @@ class SharedNotebookAccessor:
             created = await ensure_async(
                 self._contents_manager.rename_file(created["path"], notebook_id)
             )
-        saved = await ensure_async(self._contents_manager.save(model, notebook_id))
-        if self._ydoc_extension is not None:
-            room = await self.get_document_room(notebook_id)
-            await room.initialize()
-            await self._save_room(room)
-            return await self.get_notebook_model(notebook_id, content=True)
-        return saved
+        await ensure_async(self._contents_manager.save(model, notebook_id))
+        room = await self.get_document_room(notebook_id)
+        await room.initialize()
+        await self._save_room(room)
+        return await self.get_notebook_model(notebook_id, content=True)
 
     async def get_cell_source(self, notebook_id: str, cell_id: str) -> str:
         await self.ensure_document_room(notebook_id)
@@ -84,19 +81,9 @@ class SharedNotebookAccessor:
             source = ycell["source"]
             return source.to_py() if hasattr(source, "to_py") else str(source)
 
-        model = await ensure_async(self._contents_manager.get(notebook_id, content=True))
-        for cell in model["content"].get("cells", []):
-            if cell.get("id") == cell_id:
-                source = cell.get("source", "")
-                if isinstance(source, list):
-                    return "".join(source)
-                return source
         raise ValueError(f"Cell {cell_id} not found in notebook {notebook_id}")
 
     async def get_ycell(self, notebook_id: str, cell_id: str) -> Map | None:
-        if self._ydoc_extension is None:
-            return None
-
         room = await self.get_document_room(notebook_id)
         notebook = room._document
 
@@ -146,15 +133,6 @@ class SharedNotebookAccessor:
         after: str | None = None,
     ) -> dict[str, Any]:
         _validate_position(before=before, after=after)
-        if self._ydoc_extension is None:
-            model = await ensure_async(self._contents_manager.get(notebook_id, content=True))
-            cells = model["content"].get("cells", [])
-            index = _resolve_insert_index(cells, before=before, after=after)
-            cells.insert(index, cell)
-            model["content"]["cells"] = _assign_position_keys(cells)
-            await ensure_async(self._contents_manager.save(model, notebook_id))
-            return model["content"]["cells"][index]
-
         room = await self.get_document_room(notebook_id)
         notebook = room._document
         index = _resolve_insert_index(
@@ -177,15 +155,6 @@ class SharedNotebookAccessor:
         cell_id: str,
         source: str,
     ) -> dict[str, Any]:
-        if self._ydoc_extension is None:
-            model = await ensure_async(self._contents_manager.get(notebook_id, content=True))
-            cells = model["content"].get("cells", [])
-            index = _find_cell_index(cells, cell_id)
-            cells[index]["source"] = source
-            model["content"]["cells"] = _assign_position_keys(cells)
-            await ensure_async(self._contents_manager.save(model, notebook_id))
-            return cells[index]
-
         room = await self.get_document_room(notebook_id)
         notebook = room._document
         index = _find_ycell_index(notebook.ycells, cell_id)
@@ -197,15 +166,6 @@ class SharedNotebookAccessor:
         return await self.get_cell(notebook_id, cell_id)
 
     async def delete_cell(self, notebook_id: str, cell_id: str) -> None:
-        if self._ydoc_extension is None:
-            model = await ensure_async(self._contents_manager.get(notebook_id, content=True))
-            cells = model["content"].get("cells", [])
-            index = _find_cell_index(cells, cell_id)
-            cells.pop(index)
-            model["content"]["cells"] = _assign_position_keys(cells)
-            await ensure_async(self._contents_manager.save(model, notebook_id))
-            return
-
         room = await self.get_document_room(notebook_id)
         notebook = room._document
         index = _find_ycell_index(notebook.ycells, cell_id)
@@ -222,17 +182,6 @@ class SharedNotebookAccessor:
         after: str | None = None,
     ) -> dict[str, Any]:
         _validate_position(before=before, after=after)
-        if self._ydoc_extension is None:
-            model = await ensure_async(self._contents_manager.get(notebook_id, content=True))
-            cells = model["content"].get("cells", [])
-            index = _find_cell_index(cells, cell_id)
-            cell = cells.pop(index)
-            target = _resolve_insert_index(cells, before=before, after=after)
-            cells.insert(target, cell)
-            model["content"]["cells"] = _assign_position_keys(cells)
-            await ensure_async(self._contents_manager.save(model, notebook_id))
-            return cell
-
         room = await self.get_document_room(notebook_id)
         notebook = room._document
         cells = [notebook.get_cell(i) for i in range(len(notebook.ycells))]
@@ -252,16 +201,6 @@ class SharedNotebookAccessor:
         return await self.get_cell(notebook_id, cell_id)
 
     async def clear_outputs(self, notebook_id: str, cell_id: str) -> dict[str, Any]:
-        if self._ydoc_extension is None:
-            model = await ensure_async(self._contents_manager.get(notebook_id, content=True))
-            cells = model["content"].get("cells", [])
-            index = _find_cell_index(cells, cell_id)
-            cells[index]["outputs"] = []
-            cells[index]["execution_count"] = None
-            model["content"]["cells"] = _assign_position_keys(cells)
-            await ensure_async(self._contents_manager.save(model, notebook_id))
-            return cells[index]
-
         room = await self.get_document_room(notebook_id)
         notebook = room._document
         index = _find_ycell_index(notebook.ycells, cell_id)
@@ -274,22 +213,14 @@ class SharedNotebookAccessor:
         return await self.get_cell(notebook_id, cell_id)
 
     async def flush_document(self, notebook_id: str) -> None:
-        if self._ydoc_extension is None:
-            return
         room = await self.get_document_room(notebook_id)
         await self._save_room(room)
 
     async def ensure_document_room(self, notebook_id: str) -> str:
-        if self._ydoc_extension is None:
-            return notebook_id
-
         room = await self.get_document_room(notebook_id)
         return room.room_id
 
     async def get_document_room(self, notebook_id: str) -> DocumentRoom:
-        if self._ydoc_extension is None:
-            raise RuntimeError("Shared document rooms are unavailable without jupyter_server_ydoc")
-
         file_id_manager = self._ydoc_extension.serverapp.web_app.settings["file_id_manager"]
         file_id = file_id_manager.index(notebook_id)
         encoded = encode_file_path("json", "notebook", file_id)

@@ -3,9 +3,7 @@
 ## Install tiers for verification
 
 - `uv sync`
-  - base SDK/server/shared-doc runtime only
-- `uv sync --extra lab`
-  - base install plus the collaborative JupyterLab bundle
+  - Hypernote's default JupyterLab integration stack
 - `uv sync --extra dev`
   - local development and CI install; includes lint, pytest, Playwright, and browser-test prerequisites
 

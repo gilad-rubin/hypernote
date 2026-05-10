@@ -55,6 +55,15 @@ DEFAULT_SOURCE_PREVIEW_CHARS = 120
 DEFAULT_OUTPUT_PREVIEW_CHARS = DEFAULT_READ_OUTPUT_CHARS
 DEFAULT_TAIL_OUTPUT_CHARS = DEFAULT_READ_OUTPUT_CHARS
 HOME_NOTEBOOK_LIMIT = 5
+LAB_COLLABORATION_EXTENSION = "@jupyter/collaboration-extension"
+LAB_DOCPROVIDER_EXTENSION = "@jupyter/docprovider-extension"
+REQUIRED_JUPYTERLAB_STACK = (
+    ("jupyterlab", "jupyterlab"),
+    ("jupyter_collaboration", "jupyter-collaboration"),
+    ("jupyter_server_nbmodel", "jupyter-server-nbmodel"),
+    ("jupyter_server_ydoc", "jupyter-server-ydoc"),
+    ("jupyter_docprovider", "jupyter-docprovider"),
+)
 
 
 @dataclass(frozen=True)
@@ -123,12 +132,14 @@ def _server_host_port(server: str) -> tuple[str, int]:
 
 
 def _require_jupyterlab() -> None:
-    if importlib.util.find_spec("jupyterlab") is not None:
-        return
-    raise click.ClickException(
-        "jupyterlab is not installed in this Python environment. "
-        "Install it in the target repo env, then rerun `hypernote setup serve`."
-    )
+    for module_name, package_name in REQUIRED_JUPYTERLAB_STACK:
+        if importlib.util.find_spec(module_name) is not None:
+            continue
+        raise click.ClickException(
+            f"{package_name} is not installed in this Python environment. "
+            "Install Hypernote's JupyterLab integration stack in the target repo env, "
+            "then rerun `hypernote setup serve`."
+        )
 
 
 def _serve_command(
@@ -404,6 +415,94 @@ def _build_home_payload(ctx: click.Context) -> dict[str, Any]:
         "Run `hypernote setup doctor` to verify server and kernelspec health",
     ]
     return _hinted_result(payload, *hints)
+
+
+def _lab_extension_status(extensions: list[dict[str, Any]], name: str) -> str:
+    for extension in extensions:
+        if extension.get("name") != name:
+            continue
+        if extension.get("enabled") is False:
+            return "disabled"
+        status = extension.get("status")
+        return str(status or "ok")
+    return "missing"
+
+
+def _running_jupyter_servers() -> list[dict[str, Any]]:
+    try:
+        from jupyter_server.serverapp import list_running_servers
+    except Exception:
+        return []
+    try:
+        return list(list_running_servers())
+    except Exception:
+        return []
+
+
+def _append_warning(report: dict[str, object], warning: str) -> None:
+    warnings = report.setdefault("warnings", [])
+    if isinstance(warnings, list):
+        warnings.append(warning)
+
+
+def _normalized_host(host: str | None) -> str:
+    if host in {None, "", "localhost", "::1"}:
+        return "127.0.0.1"
+    return host
+
+
+def _hosts_match(configured_host: str, running_host: str) -> bool:
+    if configured_host == running_host:
+        return True
+    if configured_host in {"0.0.0.0", "::"} or running_host in {"0.0.0.0", "::"}:
+        return True
+    return False
+
+
+def _server_matches_url(server: str, running_server: dict[str, Any]) -> bool:
+    configured = urllib.parse.urlparse(server)
+    running = urllib.parse.urlparse(str(running_server.get("url", "")))
+    configured_host = _normalized_host(configured.hostname)
+    running_host = _normalized_host(running.hostname)
+    configured_port = configured.port or (443 if configured.scheme == "https" else 8888)
+    running_port = running.port or running_server.get("port")
+    return _hosts_match(configured_host, running_host) and configured_port == running_port
+
+
+def _path_overlaps(left: Path, right: Path) -> bool:
+    def overlaps(left_path: Path, right_path: Path) -> bool:
+        return (
+            left_path == right_path
+            or left_path.is_relative_to(right_path)
+            or right_path.is_relative_to(left_path)
+        )
+
+    try:
+        return overlaps(left.resolve(), right.resolve())
+    except OSError:
+        return overlaps(left.absolute(), right.absolute())
+
+
+def _duplicate_servers_for_workspace(server: str, workspace_root: Path) -> list[dict[str, Any]]:
+    running_servers = _running_jupyter_servers()
+    duplicates: list[dict[str, Any]] = []
+    for running_server in running_servers:
+        if _server_matches_url(server, running_server):
+            continue
+        root_dir = running_server.get("root_dir")
+        if not root_dir:
+            continue
+        if not _path_overlaps(workspace_root, Path(str(root_dir))):
+            continue
+        duplicates.append(
+            {
+                "url": running_server.get("url"),
+                "port": running_server.get("port"),
+                "root_dir": str(root_dir),
+                "pid": running_server.get("pid"),
+            }
+        )
+    return duplicates
 
 
 def _human_status(status: NotebookStatus, *, full: bool = False) -> str:
@@ -1065,7 +1164,7 @@ def _job_result(
     "--server",
     default=lambda: os.environ.get("HYPERNOTE_SERVER", "http://127.0.0.1:8888"),
     show_default="env HYPERNOTE_SERVER or http://127.0.0.1:8888",
-    help="Jupyter server URL",
+    help="Hypernote JupyterLab server URL",
 )
 @click.option(
     "--token",
@@ -2001,7 +2100,7 @@ def setup_group() -> None:
 @click.option("--port", type=int, help="Server port. Defaults to the port from --server.")
 @click.option(
     "--browser/--no-browser",
-    default=False,
+    default=True,
     show_default=True,
     help="Whether to open a browser tab",
 )
@@ -2032,7 +2131,7 @@ def setup_serve_cmd(
         no_browser=not browser,
     )
     url = f"http://{serve_host}:{serve_port}"
-    click.echo(f"Starting Hypernote Jupyter server at {url}")
+    click.echo(f"Starting Hypernote JupyterLab server at {url}")
     click.echo(f"Root: {resolved_root}")
     click.echo("Extensions: hypernote, jupyter_server_nbmodel, jupyter_server_ydoc")
     completed = subprocess.run(cmd, cwd=str(resolved_root), check=False)
@@ -2049,13 +2148,50 @@ def setup_doctor_cmd(ctx: click.Context, path: str | None) -> None:
     report: dict[str, object] = {"server": cfg.server, "hypernote_api": "unreachable"}
     control = _sdk_control(ctx)
     try:
+        report.update(control.get_server_diagnostics())
+        report["hypernote_api"] = "ok"
+    except Exception as exc:  # pragma: no cover - exercised via CLI output
+        report["server_diagnostics_error"] = str(exc)
+
+    try:
         control.list_jobs()
         report["hypernote_api"] = "ok"
         report["jobs_endpoint"] = True
     except Exception as exc:  # pragma: no cover - exercised via CLI output
-        report["error"] = str(exc)
+        if report.get("hypernote_api") == "ok":
+            report["jobs_endpoint"] = False
+            report["jobs_error"] = str(exc)
+        else:
+            report["error"] = str(exc)
+
+    duplicate_servers = _duplicate_servers_for_workspace(cfg.server, Path.cwd())
+    if duplicate_servers:
+        report["duplicate_servers"] = duplicate_servers
+        _append_warning(
+            report,
+            "Detected another Jupyter server for this workspace. "
+            "Use the Hypernote JupyterLab server URL, not a separate JupyterLab process.",
+        )
 
     if report.get("hypernote_api") == "ok":
+        try:
+            lab_extensions = control.get_lab_extensions()
+        except Exception as exc:  # pragma: no cover - networked failure surface
+            report["jupyterlab"] = "unreachable"
+            report["jupyterlab_error"] = str(exc)
+            report["jupyter_collaboration"] = "unknown"
+            report["jupyter_docprovider"] = "unknown"
+        else:
+            report["jupyterlab"] = "ok"
+            report["jupyter_collaboration"] = _lab_extension_status(
+                lab_extensions,
+                LAB_COLLABORATION_EXTENSION,
+            )
+            report["jupyter_docprovider"] = _lab_extension_status(
+                lab_extensions,
+                LAB_DOCPROVIDER_EXTENSION,
+            )
+
         try:
             default_spec = control.get_kernelspec("python3")
             launcher = _kernelspec_launcher(default_spec)
@@ -2086,10 +2222,11 @@ def setup_doctor_cmd(ctx: click.Context, path: str | None) -> None:
 
             runtime_kernel = runtime.get("kernel_name")
             if runtime_kernel and runtime_kernel != notebook_kernel:
-                report["warnings"] = [
+                _append_warning(
+                    report,
                     "Live runtime kernel does not match notebook metadata. "
-                    "Stop or restart the runtime to pick up the notebook's kernelspec."
-                ]
+                    "Stop or restart the runtime to pick up the notebook's kernelspec.",
+                )
         except Exception as exc:
             report["path_error"] = str(exc)
     _echo_json(report, pretty=_stdout_is_tty())
