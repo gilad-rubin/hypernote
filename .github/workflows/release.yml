@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release (e.g., 0.1.3)"
+        description: "Version to release (e.g., 0.3.0)"
         required: true
         type: string
       publish_to_pypi:
@@ -17,33 +17,82 @@ on:
         required: false
         default: false
         type: boolean
+  push:
+    branches:
+      - master
+    paths:
+      - "CHANGELOG.md"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/release.yml"
 
 permissions:
   contents: write
 
 jobs:
-  validate-inputs:
+  resolve-version:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.validate.outputs.version }}
+      version: ${{ steps.resolve.outputs.version }}
+      publish_to_pypi: ${{ steps.resolve.outputs.publish_to_pypi }}
+      create_draft: ${{ steps.resolve.outputs.create_draft }}
+      should_release: ${{ steps.resolve.outputs.should_release }}
     steps:
-      - name: Validate version format
-        id: validate
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release version
+        id: resolve
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PUBLISH_TO_PYPI: ${{ inputs.publish_to_pypi }}
+          INPUT_CREATE_DRAFT: ${{ inputs.create_draft }}
         run: |
-          VERSION="${{ inputs.version }}"
+          VERSION="$INPUT_VERSION"
+          if [ -z "$VERSION" ]; then
+            VERSION="$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          print(tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"])
+          PY
+          )"
+          fi
+
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*)?$ ]]; then
             echo "❌ Invalid version format: $VERSION"
-            echo "Expected semantic version (e.g., 0.1.3, 0.2.0-alpha.1)"
+            echo "Expected semantic version (e.g., 0.3.0, 0.3.0-alpha.1)"
             exit 1
           fi
-          echo "✅ Version format is valid"
+
+          git fetch --tags --force
+          TAG="v$VERSION"
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+              echo "ℹ️ $TAG already exists; nothing to release."
+              echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+              echo "publish_to_pypi=false" >> "$GITHUB_OUTPUT"
+              echo "create_draft=false" >> "$GITHUB_OUTPUT"
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "❌ $TAG already exists. Choose a new version."
+            exit 1
+          fi
+
+          echo "✅ Version format is valid: $VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "publish_to_pypi=${INPUT_PUBLISH_TO_PYPI:-true}" >> "$GITHUB_OUTPUT"
+          echo "create_draft=${INPUT_CREATE_DRAFT:-false}" >> "$GITHUB_OUTPUT"
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
 
   release:
-    needs: validate-inputs
+    needs: resolve-version
+    if: ${{ needs.resolve-version.outputs.should_release == 'true' }}
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.version_update.outputs.version }}
+      version: ${{ needs.resolve-version.outputs.version }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -54,11 +103,28 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Update version and create commit
-        id: version_update
+      - name: Ensure release version is checked in
         env:
-          VERSION: ${{ needs.validate-inputs.outputs.version }}
+          VERSION: ${{ needs.resolve-version.outputs.version }}
         run: |
+          CURRENT_VERSION="$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          print(tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"])
+          PY
+          )"
+
+          if [ "$CURRENT_VERSION" = "$VERSION" ]; then
+            echo "✅ pyproject.toml already declares $VERSION"
+            exit 0
+          fi
+
+          if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
+            echo "❌ pyproject.toml declares $CURRENT_VERSION, expected $VERSION"
+            exit 1
+          fi
+
           sed -i -E "0,/^version = \".*\"/s//version = \"$VERSION\"/" pyproject.toml
 
           if ! grep -q "version = \"$VERSION\"" pyproject.toml; then
@@ -66,34 +132,14 @@ jobs:
             exit 1
           fi
 
-          echo "✅ Version updated to $VERSION"
-
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          if ! git diff --quiet pyproject.toml; then
-            uv lock
-            git add pyproject.toml uv.lock
-            git commit -m "chore: bump version to v$VERSION"
-            CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-            git push origin "$CURRENT_BRANCH"
-            echo "✅ Version commit pushed"
-          fi
-
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Create and push tag
-        env:
-          VERSION: ${{ steps.version_update.outputs.version }}
-        run: |
-          TAG="v$VERSION"
-          if git tag -l | grep -q "^$TAG$"; then
-            git tag -d "$TAG" || true
-            git push origin ":refs/tags/$TAG" || true
-          fi
-          git tag -a "$TAG" -m "Release $TAG"
-          git push origin "$TAG"
-          echo "✅ Created and pushed tag $TAG"
+          uv lock
+          git add pyproject.toml uv.lock
+          git commit -m "chore: bump version to v$VERSION"
+          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          git push origin "$CURRENT_BRANCH"
+          echo "✅ Version commit pushed"
 
       - name: Build package
         run: |
@@ -113,7 +159,7 @@ jobs:
 
       - uses: actions/upload-artifact@v6
         with:
-          name: dist-${{ steps.version_update.outputs.version }}
+          name: dist-${{ needs.resolve-version.outputs.version }}
           path: dist/*
           if-no-files-found: error
 
@@ -122,35 +168,52 @@ jobs:
           uv run --extra dev playwright install --with-deps chromium
           uv run --extra dev python -m pytest -q
 
+      - name: Create and push tag
+        env:
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: |
+          TAG="v$VERSION"
+          git fetch --tags --force
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "❌ $TAG already exists. Refusing to retag."
+            exit 1
+          fi
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          echo "✅ Created and pushed tag $TAG"
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          CREATE_DRAFT: ${{ needs.resolve-version.outputs.create_draft }}
         run: |
-          TAG="v${{ steps.version_update.outputs.version }}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/* --clobber
-          else
-            gh release create "$TAG" dist/* \
-              --generate-notes \
-              --verify-tag \
-              ${{ inputs.create_draft && '--draft' || '' }}
+          TAG="v${{ needs.resolve-version.outputs.version }}"
+          DRAFT_FLAG=""
+          if [ "$CREATE_DRAFT" = "true" ]; then
+            DRAFT_FLAG="--draft"
           fi
+          gh release create "$TAG" dist/* \
+            --generate-notes \
+            --verify-tag \
+            $DRAFT_FLAG
 
       - name: Summary
         run: |
-          echo "## Release Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** v${{ steps.version_update.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **PyPI:** ${{ inputs.publish_to_pypi }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Draft:** ${{ inputs.create_draft }}" >> $GITHUB_STEP_SUMMARY
+          echo "## Release Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** v${{ needs.resolve-version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **PyPI:** ${{ needs.resolve-version.outputs.publish_to_pypi }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Draft:** ${{ needs.resolve-version.outputs.create_draft }}" >> "$GITHUB_STEP_SUMMARY"
 
   publish-pypi:
-    needs: release
-    if: ${{ inputs.publish_to_pypi }}
+    needs:
+      - resolve-version
+      - release
+    if: ${{ needs.resolve-version.outputs.publish_to_pypi == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v5
         with:
-          name: dist-${{ needs.release.outputs.version }}
+          name: dist-${{ needs.resolve-version.outputs.version }}
           path: dist/
 
       - uses: astral-sh/setup-uv@v7

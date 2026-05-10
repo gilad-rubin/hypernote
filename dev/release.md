@@ -52,11 +52,11 @@ PY
 uv lock
 ```
 
-The release workflow runs on `ubuntu-latest` and uses GNU `sed -i -E`
-inline; this Python heredoc is the same edit but works the same way on
-macOS and Linux without remembering which `sed` is installed. Either
-way, the only change to `pyproject.toml` is the top-level `version`
-line.
+The workflow's manual recovery path runs on `ubuntu-latest` and uses GNU
+`sed -i -E` inline; this Python heredoc is the same edit but works the
+same way on macOS and Linux without remembering which `sed` is installed.
+Either way, the only change to `pyproject.toml` is the top-level
+`version` line.
 
 ```bash
 # 4. PR
@@ -65,7 +65,7 @@ git commit -m "chore: prepare v$VERSION release"
 git push -u origin release/v$VERSION
 gh pr create \
   --title "chore: prepare v$VERSION release" \
-  --body "Release prep for v$VERSION. CHANGELOG section moved, version bumped, lock refreshed. Triggers release workflow on merge."
+  --body "Release prep for v$VERSION. CHANGELOG section moved, version bumped, lock refreshed. The release workflow runs automatically after merge."
 ```
 
 ```bash
@@ -73,32 +73,32 @@ gh pr create \
 gh pr merge --merge   # or --squash, depending on team preference
 ```
 
-```bash
-# 6. trigger the release workflow
-gh workflow run release.yml -f version=$VERSION -f publish_to_pypi=true -f create_draft=false
-gh run list --workflow=release.yml --limit 1
-```
+Merging a release PR to `master` is the release trigger. The release workflow
+reads the checked-in version from `pyproject.toml`, skips if `vX.Y.Z` already
+exists, and otherwise builds, tests, tags, publishes a GitHub release, and
+publishes to PyPI. `workflow_dispatch` remains available only as a recovery
+fallback; the normal path should not require a manual workflow run.
 
 The release workflow then, in order (matches
 [`.github/workflows/release.yml`](../.github/workflows/release.yml)):
 
-1. **Validates** the version string is semver-shaped.
-2. **Re-runs the version bump** on `pyproject.toml` against the merge commit (no-op if the PR already bumped it; if it does change anything it runs `uv lock`, commits, and pushes back to the branch the workflow ran on).
-3. **Creates and pushes the `vX.Y.Z` git tag.** The tag is pushed *before* build and tests — so a tag exists even if a later step fails. If a release fails after this point, see "If something is wrong after publish" below for tag cleanup.
+1. **Resolves and validates** the release version: `workflow_dispatch` uses the
+   explicit input, while merge-to-`master` reads `project.version` from
+   `pyproject.toml`.
+2. **Skips duplicate releases** if the `vX.Y.Z` tag already exists on a
+   merge-to-`master` run.
+3. **Ensures the version is checked in.** Release PRs should already have the
+   version bump and lock refresh. Manual fallback runs may still commit the
+   version bump.
 4. **Builds** wheel + sdist via `uv build`.
 5. **Verifies the wheel** installs with `uv run --isolated --no-project --with dist/*.whl python -c "import hypernote; print('ok')"`.
 6. **Uploads the build artifacts** for the publish job.
 7. **Runs the full test suite** under `--extra dev`, including Playwright with `--with-deps chromium`.
-8. **Creates the GitHub release** from the tag.
-9. **Publishes** wheel + sdist to PyPI under `PYPI_API_TOKEN` (configured as a GitHub Actions secret).
+8. **Creates and pushes the `vX.Y.Z` git tag** after build and tests pass.
+9. **Creates the GitHub release** from the tag.
+10. **Publishes** wheel + sdist to PyPI under `PYPI_API_TOKEN` (configured as a GitHub Actions secret).
 
 Past releases took ~2-3 minutes end-to-end.
-
-**Implication of the early-tag order:** if the build, verify, or test
-step fails, the `vX.Y.Z` tag is already on origin. Either delete the
-tag (`git push origin :refs/tags/vX.Y.Z` and `git tag -d vX.Y.Z`) and
-re-run after the fix, or roll forward to the next patch as if the bad
-version had been published.
 
 ## Verifying the release landed
 
@@ -121,6 +121,10 @@ or replace it.
 
 - **Do not push release-prep commits directly to master.** All releases go through PR review, even single-line CHANGELOG / version bumps. The exceptions in the 0.1.x history (0.1.0, 0.1.1, 0.1.2 were direct pushes) predate this discipline and are not the model going forward.
 - **Do not edit a CHANGELOG entry after the corresponding version is published.** If you need to correct it, file a follow-up PR that adds a "Note" line under the next version explaining the correction.
-- **Do not bump the version on master without also running the release workflow.** A version bump that never gets tagged + published produces installs of "0.X.Y from git" that disagree with PyPI.
+- **Do not bump the version outside a release PR.** The checked-in version bump
+  is the automatic release trigger once the PR lands on `master`.
 - **Do not include local-only work in the CHANGELOG.** If `git ls-tree origin/master` doesn't show the files, they are not shipping. Drop the line or commit the files first.
-- **Do not skip the integration test step before pressing the release button.** Browser tests catch the kernel-control regressions that unit tests cannot — late-open streaming, Lab Stop button, Lab Restart cleanup. CI runs them, but a local pass before opening the release PR catches problems faster.
+- **Do not skip the integration test step before opening the release PR.**
+  Browser tests catch the kernel-control regressions that unit tests cannot —
+  late-open streaming, Lab Stop button, Lab Restart cleanup. CI runs them, but a
+  local pass before opening the release PR catches problems faster.
