@@ -63,10 +63,29 @@ Either way, the only change to `pyproject.toml` is the top-level
 git add CHANGELOG.md pyproject.toml uv.lock
 git commit -m "chore: prepare v$VERSION release"
 git push -u origin release/v$VERSION
+```
+
+If the PR is **only** release bookkeeping, a generic release title is fine:
+
+```bash
 gh pr create \
   --title "chore: prepare v$VERSION release" \
   --body "Release prep for v$VERSION. CHANGELOG section moved, version bumped, lock refreshed. The release workflow runs automatically after merge."
 ```
+
+If the release PR also contains a feature or fix, the PR title and body should
+lead with that shipped change, not with the version bump. Include the target
+version in the title so it is clear that merging to `master` releases it:
+
+```bash
+gh pr create \
+  --title "Use temporary collaboration journal for setup serve and release v$VERSION" \
+  --body "This PR ships the temporary collaboration journal change and prepares v$VERSION. Merging to master triggers the release workflow for v$VERSION."
+```
+
+Release PRs should be ready for review when opened unless the implementation is
+intentionally incomplete. Do not make a release PR draft just because it contains
+the version bump.
 
 ```bash
 # 5. wait for CI, address any review, merge into master
@@ -128,6 +147,9 @@ or replace it.
 - **Do not edit a CHANGELOG entry after the corresponding version is published.** If you need to correct it, file a follow-up PR that adds a "Note" line under the next version explaining the correction.
 - **Do not bump the version outside a release PR.** The checked-in version bump
   is the automatic release trigger once the PR lands on `master`.
+- **Do not hide a shipped behavior change behind a generic release title.** If
+  the PR includes a feature or fix, make that the title and explain that the
+  version bump releases it.
 - **Do not include local-only work in the CHANGELOG.** If `git ls-tree origin/master` doesn't show the files, they are not shipping. Drop the line or commit the files first.
 - **Do not skip the integration test step before opening the release PR.**
   Browser tests catch the kernel-control regressions that unit tests cannot —
