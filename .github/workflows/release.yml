@@ -173,6 +173,8 @@ jobs:
           VERSION: ${{ needs.resolve-version.outputs.version }}
         run: |
           TAG="v$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch --tags --force
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
             TAG_TARGET="$(git rev-list -n 1 "$TAG")"
