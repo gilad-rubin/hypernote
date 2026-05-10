@@ -18,7 +18,7 @@ A browser tab viewing a notebook through the Hypernote JupyterLab Server.
 _Avoid_: separate Lab server, plain Lab tab
 
 **Agent Automation**:
-CLI or SDK notebook work performed through the Hypernote JupyterLab Server, whether or not an Open Lab Tab currently exists.
+CLI or SDK notebook work performed through the Hypernote JupyterLab Server, whether an Open Lab Tab currently exists.
 _Avoid_: separate runtime mode
 
 ## Relationships

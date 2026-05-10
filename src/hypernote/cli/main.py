@@ -470,16 +470,17 @@ def _server_matches_url(server: str, running_server: dict[str, Any]) -> bool:
 
 
 def _path_overlaps(left: Path, right: Path) -> bool:
-    try:
-        left_resolved = left.resolve()
-        right_resolved = right.resolve()
+    def overlaps(left_path: Path, right_path: Path) -> bool:
         return (
-            left_resolved == right_resolved
-            or left_resolved in right_resolved.parents
-            or right_resolved in left_resolved.parents
+            left_path == right_path
+            or left_path.is_relative_to(right_path)
+            or right_path.is_relative_to(left_path)
         )
+
+    try:
+        return overlaps(left.resolve(), right.resolve())
     except OSError:
-        return False
+        return overlaps(left.absolute(), right.absolute())
 
 
 def _duplicate_servers_for_workspace(server: str, workspace_root: Path) -> list[dict[str, Any]]:
