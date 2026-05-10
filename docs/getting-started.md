@@ -32,6 +32,11 @@ uv run hypernote setup serve
 `setup serve` opens JupyterLab by default. Use `--no-browser` when you want the
 same server without opening a Lab tab.
 
+Servers launched by `setup serve` configure Jupyter's real-time collaboration journal as
+temporary server-local state. Saved notebook contents and outputs still persist
+in the `.ipynb`; unsaved live collaboration changes are not recovered through a
+project-local database after a server crash.
+
 If the notebook belongs to another repo, install Hypernote there (`uv add hypernote --dev`)
 and run the same bootstrap command from that repo.
 
@@ -87,6 +92,7 @@ The notebook state, execution state, and outputs should still agree.
 ## Lifecycle expectation
 
 - notebook contents and outputs persist in the `.ipynb` because Jupyter owns the document
+- Jupyter's collaboration journal is temporary server-local state for servers launched by `setup serve`
 - runtime state, jobs, and cell attribution are ephemeral Hypernote control-plane state
 - stopping a runtime or restarting the server clears that control-plane state
 - runtime creation resolves the requested kernel first, otherwise notebook metadata

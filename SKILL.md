@@ -51,6 +51,10 @@ uv run hypernote setup serve --no-browser &
 available. The default address is `http://127.0.0.1:8888`. Omit `--no-browser`
 when you want setup to open JupyterLab immediately.
 
+Servers launched by `setup serve` use temporary Jupyter collaboration journal storage.
+Notebook contents and outputs still persist through the `.ipynb` file once the
+shared document is saved.
+
 **If the server is running but `default_kernel` points to the wrong Python** (e.g., a
 different repo's `.venv`), stop the old server and start a new one with `setup serve`
 from this repo. This is the only case where you should restart a running server.

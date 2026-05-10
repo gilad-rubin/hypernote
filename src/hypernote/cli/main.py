@@ -51,6 +51,7 @@ PROGRESS_CHOICES = click.Choice(["quiet", "events", "full"])
 HYPERNOTE_EXTENSION_FLAGS = (
     "{'hypernote': True, 'jupyter_server_nbmodel': True, 'jupyter_server_ydoc': True}"
 )
+HYPERNOTE_YSTORE_CLASS = "jupyter_server_ydoc.stores.TempFileYStore"
 DEFAULT_SOURCE_PREVIEW_CHARS = 120
 DEFAULT_OUTPUT_PREVIEW_CHARS = DEFAULT_READ_OUTPUT_CHARS
 DEFAULT_TAIL_OUTPUT_CHARS = DEFAULT_READ_OUTPUT_CHARS
@@ -163,6 +164,7 @@ def _serve_command(
             "--ServerApp.disable_check_xsrf=True",
             f"--ServerApp.root_dir={root}",
             f"--ServerApp.jpserver_extensions={HYPERNOTE_EXTENSION_FLAGS}",
+            f"--YDocExtension.ystore_class={HYPERNOTE_YSTORE_CLASS}",
         ]
     )
     return cmd

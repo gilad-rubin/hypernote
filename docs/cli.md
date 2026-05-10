@@ -108,6 +108,7 @@ For command variants, prefer consistent structure over clever special cases. A m
 - `hypernote setup serve`
   - starts a Hypernote-enabled JupyterLab server in the current Python environment
   - opens a browser tab by default; use `--no-browser` to keep the same server without opening a tab
+  - uses Jupyter's temporary real-time collaboration journal; the `.ipynb` remains the durable notebook artifact
 - `hypernote --server http://127.0.0.1:8899 setup serve --root /path/to/repo`
   - starts the server for another repo or port while keeping execution in that repo's environment
 - if the JupyterLab integration stack is missing in the current env, `setup serve` fails with an install hint instead of a long module error
