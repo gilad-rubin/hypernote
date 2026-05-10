@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Hypernote is now packaged and documented as a JupyterLab-first integration:
+  the default install includes JupyterLab collaboration support, `setup serve`
+  opens Lab by default, `setup doctor` reports the shared-document stack and
+  duplicate local servers, and cell-state operations require the shared
+  document path instead of falling back to contents-manager edits.
+
 ### Notes
 
 - correction: the 0.2.0 headline mentions "an experimental VS Code extension" but the

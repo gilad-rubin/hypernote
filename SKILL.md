@@ -1,6 +1,6 @@
 ---
 name: hypernote
-description: Work against Hypernote's notebook-first SDK and agent-first CLI. Use this when an agent needs to create notebooks, insert or edit cells, run code headlessly, inspect notebook status or diffs, or verify JupyterLab attach/streaming behavior.
+description: Work against Hypernote's notebook-first SDK and agent-first CLI. Use this when an agent needs to create notebooks, insert or edit cells, run code without an open Lab tab, inspect notebook status or diffs, or verify JupyterLab attach/streaming behavior.
 ---
 
 # hypernote
@@ -23,7 +23,7 @@ Hypernote CLI requires two things:
    uv add hypernote --dev
    ```
 
-2. **A running Jupyter server with the Hypernote extension enabled.**
+2. **A running Hypernote-enabled JupyterLab server.**
    See "Server lifecycle" below.
 
 Once both are in place, all commands are just `uv run hypernote ...`.
@@ -44,11 +44,12 @@ Verify it points to your repo's `.venv/bin/python`. If it does, the server is go
 **If no server is running, start one in the background:**
 
 ```bash
-uv run hypernote setup serve &
+uv run hypernote setup serve --no-browser &
 ```
 
 `setup serve` is a foreground process — run it in the background so your terminal stays
-available. The default address is `http://127.0.0.1:8888`.
+available. The default address is `http://127.0.0.1:8888`. Omit `--no-browser`
+when you want setup to open JupyterLab immediately.
 
 **If the server is running but `default_kernel` points to the wrong Python** (e.g., a
 different repo's `.venv`), stop the old server and start a new one with `setup serve`
@@ -60,7 +61,7 @@ if it's backgrounded, find its pid with `lsof -ti :8888` and kill it.
 **If port 8888 is taken**, use a different port and point all commands at it:
 
 ```bash
-uv run hypernote setup serve --port 8889 &
+uv run hypernote setup serve --port 8889 --no-browser &
 uv run hypernote --server http://127.0.0.1:8889 setup doctor
 ```
 
@@ -69,7 +70,7 @@ uv run hypernote --server http://127.0.0.1:8889 setup doctor
 ```bash
 uv run hypernote                   # live workspace dashboard and hints
 uv run hypernote setup doctor            # check for existing server
-uv run hypernote setup serve &           # only if no server is running
+uv run hypernote setup serve --no-browser &  # only if no server is running
 uv run hypernote create tmp/demo.ipynb --empty
 uv run hypernote ix tmp/demo.ipynb -s 'value = 20 + 22'
 uv run hypernote status tmp/demo.ipynb --full
@@ -149,7 +150,7 @@ know exactly where to resume. Cells after the halt point were never inserted int
 7. Start with `hypernote` itself when you need workspace context and the next best action.
 8. Use `--stream-json` only when you plan to watch the process; otherwise it wastes context.
 9. Start the server with `hypernote setup serve` instead of hand-writing Jupyter flags.
-10. Skip large rich outputs such as `graph.visualize()` in headless automation unless the visualization is the point of the run.
+10. Skip large rich outputs such as `graph.visualize()` in agent automation unless the visualization is the point of the run.
 11. Use unique notebook paths in tests and demos.
 12. Move durable notes into `docs/` or `dev/`; keep `tmp/` disposable.
 13. Treat Hypernote jobs, runtime state, and cell attribution as ephemeral coordination state, not durable history.
@@ -172,7 +173,7 @@ Install the right tier first:
 uv sync --extra dev
 ```
 
-Use `uv sync` for base runtime work and `uv sync --extra lab` when you need JupyterLab's collaborative editing on top of the runtime without the rest of the dev toolchain.
+Use `uv sync` for Hypernote's default JupyterLab integration stack.
 
 Then run:
 

@@ -79,7 +79,7 @@ Default CLI contract:
 - non-TTY: one compact final JSON result
 - explicit streaming only through `--watch` or `--stream-json`
 - summary-first read payloads should come from SDK-backed observation helpers, not CLI-only formatting rules
-- `setup serve` is the default local bootstrap path for a Hypernote-enabled Jupyter server
+- `setup serve` is the default local bootstrap path for a Hypernote-enabled JupyterLab server
 - `setup doctor --path PATH` is the preferred first diagnostic when server reachability,
   kernelspec selection, or runtime mismatch is unclear
 
@@ -160,9 +160,7 @@ Default CLI contract:
 Install guidance:
 
 - `uv sync`
-  - base Hypernote runtime/server usage
-- `uv sync --extra lab`
-  - adds `jupyter-collaboration` so JupyterLab can edit shared documents collaboratively
+  - Hypernote's default JupyterLab integration stack
 - `uv sync --extra dev`
   - adds local development, lint, test, and browser-validation tooling
 

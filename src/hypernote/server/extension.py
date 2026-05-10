@@ -58,7 +58,7 @@ class HypernoteExtension(ExtensionApp):
             nbmodel_ext = _get_extension_instance(self.serverapp, NBMODEL_EXTENSION_NAME)
             execution_stack = getattr(nbmodel_ext, "_Extension__execution_stack")
             validate_nbmodel_internals(execution_stack)
-            ydoc_ext = _get_optional_extension_instance(self.serverapp, YDOC_EXTENSION_NAME)
+            ydoc_ext = _get_extension_instance(self.serverapp, YDOC_EXTENSION_NAME)
 
             runtime_mgr = RuntimeManager(
                 session_manager=self.settings["session_manager"],
@@ -241,13 +241,6 @@ def _get_extension_instance(serverapp, extension_name: str):
     exts = serverapp.extension_manager.extension_apps.get(extension_name, set())
     if not exts:
         raise RuntimeError(f"Required Jupyter extension '{extension_name}' is not loaded")
-    return next(iter(exts))
-
-
-def _get_optional_extension_instance(serverapp, extension_name: str):
-    exts = serverapp.extension_manager.extension_apps.get(extension_name, set())
-    if not exts:
-        return None
     return next(iter(exts))
 
 

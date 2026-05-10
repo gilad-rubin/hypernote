@@ -317,7 +317,7 @@ def connect(
     timeout: float = 30.0,
     transport: httpx.BaseTransport | None = None,
 ) -> Notebook:
-    """Connect to a notebook path on a Hypernote-enabled Jupyter server."""
+    """Connect to a notebook path on a Hypernote-enabled JupyterLab server."""
     cfg = _Config(
         server=(server or os.environ.get("HYPERNOTE_SERVER", "http://127.0.0.1:8888")).rstrip("/"),
         token=token or os.environ.get("HYPERNOTE_TOKEN"),
@@ -442,6 +442,12 @@ class _ControlPlane(_SDKMixin):
         )
         _raise_response(response)
         return response.json()
+
+    def get_lab_extensions(self) -> list[dict[str, Any]]:
+        response = self._request("GET", "/lab/api/extensions")
+        _raise_response(response)
+        payload = response.json()
+        return payload if isinstance(payload, list) else []
 
     def send_job_stdin(self, job_id: str, value: str) -> dict[str, Any]:
         response = self._request(

@@ -7,7 +7,7 @@ Hypernote's CLI is agent-first:
 - non-TTY: compact final JSON by default
 - explicit streaming only with `--watch` or `--stream-json`
 
-The CLI is a thin client. It requires a running Hypernote-enabled Jupyter server.
+The CLI is a thin client. It requires a running Hypernote-enabled JupyterLab server.
 Its summary-first read surfaces are backed by SDK observation helpers so the CLI, agents, and
 other adapters can share the same truncation and focused-read rules.
 
@@ -63,7 +63,7 @@ Commands often append contextual hints. In human mode they appear as `hint:` lin
 - `runtime ensure`
 - `runtime stop`
 - `setup serve`
-  - start a Hypernote-enabled Jupyter server in the current Python environment
+  - start a Hypernote-enabled JupyterLab server in the current Python environment
 - `setup doctor`
   - use `setup doctor --path PATH` to compare notebook metadata against the live runtime and surface kernel mismatches
 
@@ -106,10 +106,11 @@ For command variants, prefer consistent structure over clever special cases. A m
 ## Serve bootstrap
 
 - `hypernote setup serve`
-  - starts JupyterLab in the current Python environment with Hypernote, nbmodel, and ydoc enabled
+  - starts a Hypernote-enabled JupyterLab server in the current Python environment
+  - opens a browser tab by default; use `--no-browser` to keep the same server without opening a tab
 - `hypernote --server http://127.0.0.1:8899 setup serve --root /path/to/repo`
   - starts the server for another repo or port while keeping execution in that repo's environment
-- if `jupyterlab` is missing in the current env, `setup serve` fails with an install hint instead of a long module error
+- if the JupyterLab integration stack is missing in the current env, `setup serve` fails with an install hint instead of a long module error
 
 ## Batch execution notes
 

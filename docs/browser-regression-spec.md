@@ -10,9 +10,9 @@ The suite must prove that notebook edits, execution, streaming output, and noteb
 
 The system should support this workflow consistently:
 
-1. Create or connect to a notebook headlessly through the SDK.
+1. Create or connect to a notebook through the SDK while no Lab tab is open.
 2. Insert or edit cells through the SDK.
-3. Run cells headlessly through the SDK.
+3. Run cells through the SDK while no Lab tab is open.
 4. Open the notebook in JupyterLab at any point before, during, or after execution.
 5. Observe the exact same notebook state, execution state, and output history that would have been visible if the notebook had been open from the start.
 
@@ -42,7 +42,7 @@ Notebook edits and execution must use one logical document truth, regardless of 
 - While the cell is running, streamed output appears progressively.
 - After completion, the tab shows the final outputs and final execution state.
 
-### Persistence after headless execution
+### Persistence without an open Lab tab
 
 - After SDK insertion and execution, the notebook stores the correct `execution_count` and outputs.
 - Reopening the notebook later shows the same outputs and state.
@@ -69,7 +69,7 @@ Notebook edits and execution must use one logical document truth, regardless of 
 
 ### Late-open correctness
 
-- If a long-running cell starts headlessly and the notebook is opened mid-execution, the notebook immediately shows the output already produced so far.
+- If a long-running cell starts while no Lab tab is open and the notebook is opened mid-execution, the notebook immediately shows the output already produced so far.
 - The running cell shows the correct running state on first render.
 - New output continues to stream after the notebook is opened.
 - Opening late does not restart execution, duplicate output, or change runtime/job identity.
@@ -109,7 +109,7 @@ Notebook edits and execution must use one logical document truth, regardless of 
 ### Scenario D: Late-open during streaming
 
 1. Insert a long-running code cell through the SDK.
-2. Start `cell.run()` headlessly.
+2. Start `cell.run()` while no Lab tab is open.
 3. Wait until output has already been produced.
 4. Open the notebook in JupyterLab mid-execution.
 5. Verify prior output is already visible on first render.

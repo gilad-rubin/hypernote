@@ -1,6 +1,6 @@
 # Hypernote
 
-- **Notebook-first** - Hypernote is a thin execution control plane on top of Jupyter shared documents.
+- **JupyterLab-first** - Hypernote is a thin execution control plane for a Hypernote-enabled JupyterLab server.
 - **One notebook truth** - notebook edits, execution, and late-open JupyterLab views all operate on the same logical document.
 - **Agent-first surface** - the Python SDK is primary, and the CLI is a thin shell over it.
 - **Ephemeral control plane** - Jupyter owns durable `.ipynb` contents and outputs; Hypernote owns in-memory runtimes, jobs, and attribution.
@@ -12,7 +12,7 @@
 - Jupyter server extension for execution and runtime control
 - subshell-routed execute, interrupt, and restart so JupyterLab stays usable while Hypernote is running cells
 - notebook-scoped runtime lifecycle with attach, detach, recovery, and stop
-- job polling and `input()` round-trips for headless execution
+- job polling and `input()` round-trips for agent automation without requiring an open Lab tab
 - live-server and browser regression coverage for shared-document behavior
 
 ## Quick start
@@ -30,23 +30,18 @@ uv run hypernote status tmp/demo.ipynb --full
 For another repo's environment, install Hypernote there (`uv add hypernote --dev`) and run
 the same bootstrap command from that repo.
 
-## Install tiers
+## Install
 
-- `hypernote`
-  - core + server + shared-doc runtime
-  - use this for real Hypernote SDK/server usage
-- `hypernote[lab]`
-  - adds `jupyter-collaboration` for multi-user shared-document support
-  - use this when you want JupyterLab's collaborative editing on top of the base runtime
-- `hypernote[dev]`
-  - adds test, lint, browser, and local dev tooling
-  - use this for local development and CI
+The default install includes the JupyterLab integration stack Hypernote needs:
+JupyterLab, shared-document support, server-side notebook execution, and the
+collaboration/docprovider frontend packages.
+
+Use `hypernote[dev]` only for local development and CI tooling.
 
 Examples:
 
 ```bash
 uv sync
-uv sync --extra lab
 uv sync --extra dev
 ```
 
