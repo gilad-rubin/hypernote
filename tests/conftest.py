@@ -13,6 +13,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from hypernote.cli.main import HYPERNOTE_EXTENSION_FLAGS, HYPERNOTE_YSTORE_CLASS
 from tests.helpers import auth_headers, hypernote_headers
 
 
@@ -47,15 +48,13 @@ def live_server(tmp_path_factory: pytest.TempPathFactory) -> LiveServer:
         "--ServerApp.password=",
         "--ServerApp.disable_check_xsrf=True",
         f"--ServerApp.root_dir={root_dir}",
-        (
-            "--ServerApp.jpserver_extensions="
-            "{'hypernote': True, 'jupyter_server_nbmodel': True, 'jupyter_server_ydoc': True}"
-        ),
+        f"--ServerApp.jpserver_extensions={HYPERNOTE_EXTENSION_FLAGS}",
+        f"--YDocExtension.ystore_class={HYPERNOTE_YSTORE_CLASS}",
     ]
     env = os.environ.copy()
     process = subprocess.Popen(
         cmd,
-        cwd=str(Path(__file__).resolve().parents[1]),
+        cwd=str(root_dir),
         env=env,
         stdout=log_path.open("w"),
         stderr=subprocess.STDOUT,

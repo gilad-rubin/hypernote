@@ -1212,6 +1212,10 @@ def test_setup_serve_launches_jupyterlab_with_browser_by_default(
     assert (
         f"--ServerApp.jpserver_extensions={cli_main.HYPERNOTE_EXTENSION_FLAGS}" in cmd
     )
+    assert (
+        "--YDocExtension.ystore_class=jupyter_server_ydoc.stores.TempFileYStore"
+        in cmd
+    )
     assert captured["cwd"] == str(tmp_path.resolve())
     assert captured["check"] is False
 

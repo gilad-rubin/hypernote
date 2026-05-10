@@ -4,6 +4,7 @@
 - **One notebook truth** - notebook edits, execution, and late-open JupyterLab views all operate on the same logical document.
 - **Agent-first surface** - the Python SDK is primary, and the CLI is a thin shell over it.
 - **Ephemeral control plane** - Jupyter owns durable `.ipynb` contents and outputs; Hypernote owns in-memory runtimes, jobs, and attribution.
+- **Temporary collaboration journal** - `setup serve` keeps Jupyter RTC updates in server-local temp storage, not repo-root databases.
 
 ## What it ships
 
@@ -51,6 +52,7 @@ Jupyter owns:
 
 - notebook persistence
 - shared YDoc document state
+- temporary collaboration journal state for live RTC updates
 - kernel and session primitives
 - notebook rendering in JupyterLab
 

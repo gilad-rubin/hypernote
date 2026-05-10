@@ -50,6 +50,21 @@ async def test_execute_persists_output(
     assert outputs, "Expected outputs to be persisted into the notebook"
 
 
+async def test_execute_does_not_create_project_collaboration_database(
+    hypernote_api,
+    jupyter_api,
+    live_server: LiveServer,
+):
+    notebook = await _create_live_notebook(jupyter_api, "hypernote-live-temp-journal")
+    quoted = urllib.parse.quote(notebook, safe="")
+    resp = await hypernote_api.post(f"/notebooks/{quoted}/execute", json={"cell_ids": ["cell-a"]})
+    resp.raise_for_status()
+
+    job = await await_job(hypernote_api, resp.json()["job_id"])
+    assert job["status"] == "succeeded"
+    assert not (live_server.root_dir / ".jupyter_ystore.db").exists()
+
+
 async def test_execute_honors_notebook_kernelspec_instead_of_defaulting(
     hypernote_api,
     jupyter_api,

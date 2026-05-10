@@ -21,6 +21,8 @@ Jupyter shared document + kernel/session primitives
 - `setup serve` is the CLI bootstrap path for starting a local Hypernote-enabled JupyterLab server.
 - Notebook reads and writes must go through the shared-document path.
 - Execution must resolve cell source from the same document model the UI sees.
+- Servers launched by `setup serve` use Jupyter's temporary RTC collaboration journal;
+  the `.ipynb` file is the durable notebook artifact.
 - JupyterLab is the supported integration environment. Opening a Lab tab is optional,
   but Hypernote still runs through the Hypernote-enabled JupyterLab server and shared
   document path.
@@ -31,6 +33,7 @@ Jupyter shared document + kernel/session primitives
 - open-tab and closed-tab behavior must match
 - opening a notebook mid-run must show prior output and continue streaming
 - persisted `.ipynb` output must converge with the live shared document
+- unsaved shared-document state is not recovered through a project-local RTC database
 - runtime creation must resolve the desired kernel from an explicit override, otherwise the
   notebook metadata kernelspec, otherwise `python3`
 - Hypernote must not silently reuse a live runtime if the notebook now targets a different kernel

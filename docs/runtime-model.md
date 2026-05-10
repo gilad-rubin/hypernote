@@ -6,6 +6,7 @@ Jupyter owns the notebook document and kernel primitives. Hypernote owns the con
 
 - notebook persistence
 - shared YDoc state
+- real-time collaboration journal state
 - kernel and session primitives
 - notebook rendering in JupyterLab
 
@@ -25,6 +26,18 @@ Hypernote-owned control-plane state is intentionally ephemeral:
 - stopping a runtime, GC eviction, or restarting the server clears that control-plane state
 
 Notebook contents and outputs still persist because Jupyter owns the `.ipynb` document.
+
+## Collaboration journal
+
+Servers launched by `setup serve` configure Jupyter's real-time collaboration journal as
+temporary server-local state. The journal helps the live shared document while
+the server is running, but it is not a project artifact, job history, or
+attribution store.
+
+Durability begins when the shared document is saved into the `.ipynb` notebook
+file. If a server crashes before an unsaved live change reaches the `.ipynb`,
+Hypernote does not promise to recover that change from a persistent
+collaboration database.
 
 ## Kernel selection
 

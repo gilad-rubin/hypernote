@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.4.0 - 2026-05-10
+
+Hypernote now treats Jupyter's real-time collaboration journal as temporary
+server-local state for `setup serve`, keeping the `.ipynb` notebook file as the
+only durable project artifact.
+
+### Changed
+
+- `hypernote setup serve` now configures Jupyter RTC to use temporary
+  collaboration journal storage instead of Jupyter's default project-root
+  `.jupyter_ystore.db` SQLite database.
+- Live-server and browser regression fixtures now launch with the same
+  temporary journal policy as `setup serve`, including coverage that notebook
+  execution does not create `.jupyter_ystore.db` in the server root.
+- Project guidance now distinguishes the durable **Notebook File** from the
+  temporary **Collaboration Journal**, and documents the crash-recovery tradeoff
+  for unsaved live shared-document changes.
+
 ## 0.3.0 - 2026-05-10
 
 Hypernote is now a JupyterLab-first integration: the default install carries the
