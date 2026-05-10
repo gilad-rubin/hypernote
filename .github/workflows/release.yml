@@ -31,6 +31,7 @@ permissions:
 
 jobs:
   resolve-version:
+    if: ${{ github.event_name != 'push' || github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.resolve.outputs.version }}
@@ -69,7 +70,7 @@ jobs:
           git fetch --tags --force
           TAG="v$VERSION"
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "${GITHUB_RUN_ATTEMPT:-1}" = "1" ]; then
               echo "ℹ️ $TAG already exists; nothing to release."
               echo "version=$VERSION" >> "$GITHUB_OUTPUT"
               echo "publish_to_pypi=false" >> "$GITHUB_OUTPUT"
@@ -77,8 +78,7 @@ jobs:
               echo "should_release=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            echo "❌ $TAG already exists. Choose a new version."
-            exit 1
+            echo "ℹ️ $TAG already exists; continuing because this is a rerun/recovery attempt."
           fi
 
           echo "✅ Version format is valid: $VERSION"
@@ -175,7 +175,13 @@ jobs:
           TAG="v$VERSION"
           git fetch --tags --force
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "❌ $TAG already exists. Refusing to retag."
+            TAG_TARGET="$(git rev-list -n 1 "$TAG")"
+            HEAD_SHA="$(git rev-parse HEAD)"
+            if [ "$TAG_TARGET" = "$HEAD_SHA" ]; then
+              echo "✅ $TAG already points at $HEAD_SHA; continuing."
+              exit 0
+            fi
+            echo "❌ $TAG points at $TAG_TARGET, not current HEAD $HEAD_SHA. Refusing to retag."
             exit 1
           fi
           git tag -a "$TAG" -m "Release $TAG"
@@ -192,10 +198,14 @@ jobs:
           if [ "$CREATE_DRAFT" = "true" ]; then
             DRAFT_FLAG="--draft"
           fi
-          gh release create "$TAG" dist/* \
-            --generate-notes \
-            --verify-tag \
-            $DRAFT_FLAG
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --generate-notes \
+              --verify-tag \
+              $DRAFT_FLAG
+          fi
 
       - name: Summary
         run: |

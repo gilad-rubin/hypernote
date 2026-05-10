@@ -77,7 +77,9 @@ Merging a release PR to `master` is the release trigger. The release workflow
 reads the checked-in version from `pyproject.toml`, skips if `vX.Y.Z` already
 exists, and otherwise builds, tests, tags, publishes a GitHub release, and
 publishes to PyPI. `workflow_dispatch` remains available only as a recovery
-fallback; the normal path should not require a manual workflow run.
+fallback; the normal path should not require a manual workflow run. Bot-authored
+pushes from the recovery path are ignored so the workflow cannot self-trigger a
+second release run.
 
 The release workflow then, in order (matches
 [`.github/workflows/release.yml`](../.github/workflows/release.yml)):
@@ -95,7 +97,9 @@ The release workflow then, in order (matches
 6. **Uploads the build artifacts** for the publish job.
 7. **Runs the full test suite** under `--extra dev`, including Playwright with `--with-deps chromium`.
 8. **Creates and pushes the `vX.Y.Z` git tag** after build and tests pass.
-9. **Creates the GitHub release** from the tag.
+   Reruns tolerate an existing tag only when it already points at the current
+   commit.
+9. **Creates or updates the GitHub release** from the tag.
 10. **Publishes** wheel + sdist to PyPI under `PYPI_API_TOKEN` (configured as a GitHub Actions secret).
 
 Past releases took ~2-3 minutes end-to-end.
