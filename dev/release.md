@@ -96,7 +96,8 @@ The release workflow then, in order (matches
 5. **Verifies the wheel** installs with `uv run --isolated --no-project --with dist/*.whl python -c "import hypernote; print('ok')"`.
 6. **Uploads the build artifacts** for the publish job.
 7. **Runs the full test suite** under `--extra dev`, including Playwright with `--with-deps chromium`.
-8. **Creates and pushes the `vX.Y.Z` git tag** after build and tests pass.
+8. **Creates and pushes the `vX.Y.Z` git tag** after build and tests pass,
+   using the `github-actions[bot]` identity for the annotated tag.
    Reruns tolerate an existing tag only when it already points at the current
    commit.
 9. **Creates or updates the GitHub release** from the tag.
