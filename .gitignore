@@ -17,6 +17,8 @@ lib/
 *.tsbuildinfo
 .jupyter/
 .agent-repl/
+.DS_Store
+.playwright-mcp/
 tmp/
 vscode-extension/
 dev/vscode-extension.md
