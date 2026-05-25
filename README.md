@@ -20,22 +20,30 @@
 
 ```bash
 uv sync
-uv run hypernote --help
-uv run hypernote setup serve
 uv run hypernote setup doctor
-uv run hypernote create tmp/demo.ipynb
-uv run hypernote ix tmp/demo.ipynb -s 'value = 20 + 22\nprint(value)'
-uv run hypernote status tmp/demo.ipynb --full
+# If no Hypernote API is reachable, start the server from this repo.
+# Omit --no-browser when you want setup to open JupyterLab immediately.
+uv run hypernote setup serve --no-browser > tmp/hypernote-serve.log 2>&1 &
+uv run hypernote setup doctor
+notebook_path="tmp/demo-$(date +%Y%m%d-%H%M%S).ipynb"
+uv run hypernote create "$notebook_path" --empty --brief
+uv run hypernote ix "$notebook_path" -s 'value = 20 + 22; print(value)' --brief
+uv run hypernote status "$notebook_path" --brief
 ```
 
+Use the notebook path you actually want. The `tmp/demo-...` path above is only a
+disposable example that avoids overwriting an existing notebook.
+`--brief` keeps the cell's `output_preview` while omitting hints, snapshot
+tokens, and bulky raw output payloads.
+
 For another repo's environment, install Hypernote there (`uv add hypernote --dev`) and run
-the same bootstrap command from that repo.
+`setup doctor` / `setup serve` from that repo so kernels and notebook paths line up.
 
 ## Install
 
 The default install includes the JupyterLab integration stack Hypernote needs:
 JupyterLab, shared-document support, server-side notebook execution, and the
-collaboration/docprovider frontend packages.
+Hypernote server extension.
 
 Use `hypernote[dev]` only for local development and CI tooling.
 
@@ -63,7 +71,7 @@ Hypernote owns:
 - actor attribution
 - SDK, CLI, and thin REST handlers
 
-## Design discipline
+## Contributor discipline
 
 - shared behavior should have one owner, usually the SDK for agent-facing observation rules
 - command and payload variants should preserve one contract unless a difference is explicit and documented
@@ -72,11 +80,20 @@ Hypernote owns:
 
 ## Documentation
 
+Operator docs:
+
 - [Getting Started](docs/getting-started.md)
 - [CLI Reference](docs/cli.md)
 - [SDK Reference](docs/sdk.md)
+
+Contributor and advanced behavior docs:
+
+- [Agent Contributor Guide](dev/agent-contributor.md)
 - [Runtime Model](docs/runtime-model.md)
 - [Browser Regression Spec](docs/browser-regression-spec.md)
+
+Agents that only need to create, run, recover, or open notebooks can stop after
+the operator docs.
 
 ## Verification
 

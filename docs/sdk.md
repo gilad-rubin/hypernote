@@ -4,11 +4,27 @@ The SDK is notebook-first.
 
 ## Entry point
 
+Connect to an existing or pre-created notebook:
+
 ```python
 import hypernote
 
-nb = hypernote.connect("tmp/demo.ipynb", create=True)
+nb = hypernote.connect("path/to/notebook.ipynb")
 ```
+
+Use the notebook path your workflow needs. Temporary `tmp/*.ipynb` paths are
+useful for examples and tests, but they are not required.
+
+To create a notebook through the SDK as a convenience, pass `create=True`:
+
+```python
+nb = hypernote.connect("path/to/notebook.ipynb", create=True)
+```
+
+Depending on the live notebook model, `create=True` may add a default blank code
+cell. If exact empty state matters, create the notebook with
+`uv run hypernote create PATH --empty --brief`, then connect with
+`hypernote.connect(PATH)`.
 
 ## Main objects
 
@@ -72,12 +88,31 @@ explicitly requests another kernel.
 `Job.wait(timeout=...)` raises `ExecutionTimeoutError` with the job id, last known status, and
 CLI recovery hints for `job get` and `cat`.
 
+For agent scripts, prefer a bounded wait:
+
+```python
+job.wait(timeout=60)
+```
+
 ## Observation model
 
 - `nb.status()` returns current notebook state
 - `nb.status(full=True)` includes full source and outputs
 - `snap = nb.snapshot()` captures a diff baseline
 - `nb.diff(snapshot=snap)` returns changed cells only
+
+For the smallest human confirmation after a run, prefer `nb.status().summary`.
+Use `nb.status(full=True)` only when you need full source/output details.
+`aggregates()` and `compact_dict()` include the snapshot token used by `diff`;
+that is useful for tooling but noisier than the summary string.
+Preview helpers return structured dictionaries for tools, not raw stdout
+strings; for example, `cell.output_preview(full_output=True)` includes fields
+such as `text`, `truncated`, and character counts.
+You do not need `nb.status(full=True)` before calling
+`status.cell(cell_id).output_preview(full_output=True)`; `full_output=True` on
+the preview helper is the knob that controls the output preview.
+The CLI's `--brief` mode uses the same preview helpers so agents still see the
+cell result while avoiding bulky raw outputs and hints.
 
 ### Summary-first helpers
 
@@ -86,32 +121,26 @@ consumers can share the same summary/truncation rules instead of re-encoding the
 
 - `status.aggregates()`
   - top-level counts and runtime state for the notebook
-- `status.compact_cells(...)`
+- `status.compact_cells(full_source=False, include_outputs=False, full_output=False, failed_only=False, query=None, max_output_chars=400)`
   - filtered, compact cell summaries with source/output previews
-- `status.compact_dict(...)`
+- `status.compact_dict(full_source=False, include_outputs=False, full_output=False, failed_only=False, query=None, max_output_chars=400, include_details=False)`
   - notebook aggregates plus compact cells in one payload
 - `status.cell(cell_id)`
   - look up a specific `CellStatus` by id
 - `cell.has_error_output()`
   - whether the cell's outputs include an error
-- `cell.source_preview(...)`
+- `cell.source_preview(full=False, limit=...)`
   - truncated or full source preview for one cell
-- `cell.output_preview(...)`
+- `cell.output_preview(max_chars=400, full_output=False)`
   - truncated or full output preview for one cell
-- `cell.compact_dict(...)`
+- `cell.compact_dict(full_source=False, include_outputs=False, full_output=False, max_output_chars=400)`
   - compact source/output view for one cell
-- `cell.output_payload(...)`
+- `cell.output_payload(max_chars=400, full_output=False, tail=False)`
   - focused output-only view for one cell, with optional tail preview
 
 These helpers are intended for agent-oriented observation and tooling layers. They preserve
 the notebook-first object model while centralizing truncation, error detection, and focused-read
 rules in the SDK.
-
-Contract guidance:
-
-- shared observation semantics should live here once, then be rendered by the CLI and tests
-- aggregate fields should report exact semantics, not approximations
-- boundary payload normalization belongs at adapter edges, not scattered across consumers
 
 ## Public errors
 
