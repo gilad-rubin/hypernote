@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.4.1 - 2026-05-25
+
+Hypernote now has a low-noise operator path for agents: create notebooks,
+execute cells, inspect focused outputs, and hand off to JupyterLab without
+filling context with server logs, hints, snapshots, or raw notebook payloads.
+
+### Added
+
+- `--brief` output for `create`, `ix`, `exec`, `status`, `cat`, and
+  `edit replace`, preserving useful cell output previews while omitting bulky
+  command hints, snapshots, raw payloads, and per-cell batch chatter.
+- `CellStatus.from_handle(cell)` for SDK-owned cell observation shaping from a
+  live `CellHandle`.
+- Focused operator guidance for headless notebook setup, execution, recovery,
+  batch mode, SDK use, and browser handoff.
+
+### Changed
+
+- `SKILL.md` and `AGENTS.md` now prioritize operator workflows; contributor
+  architecture, release, and verification guidance moved to
+  `dev/agent-contributor.md`.
+- Headless setup recipes now redirect long-running server logs and wait briefly
+  for `setup doctor` readiness after backgrounding `setup serve`.
+- Deferred VS Code extension artifacts are ignored until that surface is ready
+  to ship.
+
+### Fixed
+
+- Stream output previews now normalize list-shaped Jupyter stream text and
+  strip ANSI color sequences.
+- Brief execution output avoids presenting stale cell outputs as fresh when a
+  job was launched with `--no-wait`.
+- `ix --brief` and `exec --brief` reject incompatible streaming or human output
+  modes before mutating notebook state.
+
 ## 0.4.0 - 2026-05-10
 
 Hypernote now treats Jupyter's real-time collaboration journal as temporary
