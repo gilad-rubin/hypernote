@@ -7,18 +7,17 @@ description: Work against Hypernote's notebook-first SDK and agent-first CLI. Us
 
 `hypernote` is the notebook runtime surface. The SDK is the core API. The CLI is a thin shell over that SDK.
 
-Design rule: if a compact read model, truncation rule, or focused observation flow is useful in the CLI and also generally useful to agents or other adapters, define it in the SDK first and let the CLI render it, rather than re-encoding the logic in the CLI.
-
-Review rule: prefer finishing a feature with contract cleanup, not just feature coverage. Variants should share one envelope, aggregate names should match their exact semantics, and adapters should normalize boundary payload shapes instead of assuming one representation.
-
-Run `uv run hypernote` for a live workspace dashboard, `uv run hypernote --help` for the current command list, and `uv run hypernote <command> --help` for exact syntax.
+Run `uv run hypernote` for a live workspace dashboard when you need
+orientation. Use `--help` only as an explicit discovery fallback when the task
+is not covered by this skill or the docs.
 
 ## Prerequisite
 
 Hypernote CLI requires two things:
 
 1. **`hypernote` installed in the current repo's environment.**
-   If `uv run hypernote --help` fails, install it first:
+   If `uv run hypernote setup doctor` fails because the command is missing,
+   install it first:
    ```bash
    uv add hypernote --dev
    ```
@@ -38,18 +37,25 @@ One server serves all notebooks and all agents in a workspace. Do not start mult
 uv run hypernote setup doctor
 ```
 
-The output includes `default_kernel` — the Python interpreter the server's kernel uses.
-Verify it points to your repo's `.venv/bin/python`. If it does, the server is good — use it.
+For headless CLI/SDK work, the important fields are `hypernote_api`,
+`jupyter_server_nbmodel`, `jupyter_server_ydoc`, and `jobs_endpoint`. If those
+are usable and `default_kernel` is plausible for the repo, use the server.
+`default_kernel` may be a kernelspec name such as `python` or an interpreter
+path. `jupyter_collaboration` or `jupyter_docprovider` showing `missing` is not
+by itself a blocker for headless execution; investigate those only when browser
+or JupyterLab collaboration behavior is failing.
 
-**If no server is running, start one in the background:**
+**If no server is running, start one from the repo that owns the notebook:**
 
 ```bash
-uv run hypernote setup serve --no-browser &
+uv run hypernote setup serve --no-browser > tmp/hypernote-serve.log 2>&1 &
 ```
 
-`setup serve` is a foreground process — run it in the background so your terminal stays
-available. The default address is `http://127.0.0.1:8888`. Omit `--no-browser`
-when you want setup to open JupyterLab immediately.
+`setup serve` is a foreground process. Agents that need to keep working should
+background it and redirect logs. The default address is `http://127.0.0.1:8888`.
+Omit `--no-browser` when the user wants JupyterLab opened as part of setup; use
+`--no-browser` only for quiet headless automation or when you will open a
+specific notebook URL yourself.
 
 Servers launched by `setup serve` use temporary Jupyter collaboration journal storage.
 Notebook contents and outputs still persist through the `.ipynb` file once the
@@ -65,20 +71,121 @@ if it's backgrounded, find its pid with `lsof -ti :8888` and kill it.
 **If port 8888 is taken**, use a different port and point all commands at it:
 
 ```bash
-uv run hypernote setup serve --port 8889 --no-browser &
+uv run hypernote setup serve --port 8889 --no-browser > tmp/hypernote-serve-8889.log 2>&1 &
 uv run hypernote --server http://127.0.0.1:8889 setup doctor
 ```
 
 ## Quick Start
 
+Pick the notebook path from the user's request. If the user did not ask for a
+specific path, use a unique disposable path under `tmp/` so examples and agent
+runs do not overwrite each other.
+
 ```bash
 uv run hypernote                   # live workspace dashboard and hints
 uv run hypernote setup doctor            # check for existing server
-uv run hypernote setup serve --no-browser &  # only if no server is running
-uv run hypernote create tmp/demo.ipynb --empty
-uv run hypernote ix tmp/demo.ipynb -s 'value = 20 + 22'
-uv run hypernote status tmp/demo.ipynb --full
+uv run hypernote setup serve --no-browser > tmp/hypernote-serve.log 2>&1 &  # only if the API is unreachable and quiet headless setup is desired
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  uv run hypernote setup doctor | grep -q '"hypernote_api"[[:space:]]*:[[:space:]]*"ok"' && break
+  sleep 0.5
+done
+uv run hypernote setup doctor            # readiness check after a cold start
+notebook_path="tmp/demo-$(date +%Y%m%d-%H%M%S).ipynb"
+uv run hypernote create "$notebook_path" --empty --brief
+uv run hypernote ix "$notebook_path" -s 'value = 20 + 22' --brief
+uv run hypernote status "$notebook_path" --brief
 ```
+
+## Fast Agent Smoke Test
+
+When the task is simply to prove headless execution and optionally open the
+result in JupyterLab, keep the workflow to the product path. Use the path the
+user requested; the `tmp/` path below is only for disposable smoke tests:
+
+```bash
+uv run hypernote setup doctor
+# only if the Hypernote API is unreachable and you do not want setup to open Lab:
+uv run hypernote setup serve --no-browser > tmp/hypernote-serve.log 2>&1 &
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  uv run hypernote setup doctor | grep -q '"hypernote_api"[[:space:]]*:[[:space:]]*"ok"' && break
+  sleep 0.5
+done
+uv run hypernote setup doctor
+notebook_path="tmp/demo-$(date +%Y%m%d-%H%M%S).ipynb"
+uv run hypernote create "$notebook_path" --empty --brief
+uv run hypernote ix "$notebook_path" -s 'value = 20 + 22; print(value)' --brief
+```
+
+Run `setup serve` only when `setup doctor` shows the Hypernote API is
+unreachable or the server belongs to the wrong environment. If you start the
+server from an agent, redirect its output to `tmp/*.log`; Jupyter startup,
+autosave, kernel, and 404 messages are operational noise unless the server
+failed to start.
+
+If the user asks to open JupyterLab during setup, omit `--no-browser`. If they
+ask to open the resulting notebook, use the browser handoff URL below after the
+headless command succeeds.
+
+To hand the notebook to a browser or UI surface, open:
+
+```text
+<server-from-setup-doctor>/lab/tree/<notebook-path>
+```
+
+URL-encode path segments that contain spaces or special URL characters. Simple
+workspace-relative paths such as `tmp/demo.ipynb` can be used directly.
+
+For a smoke test, do not inspect broad docs, run command help, or stream server
+logs unless the direct path fails and that information is needed for recovery.
+Browser automation is only the final handoff step; Hypernote work should happen
+through `setup serve`, `create`, and `ix`.
+
+## Common Agent Recipes
+
+Use these compact paths before reaching for `--help` or broad notebook reads.
+For agent loops, add `--brief` to `create`, `ix`, `exec`, `status`,
+`edit replace`, and focused `cat` reads when you want the cell result without
+command hints, snapshot tokens, raw output payloads, or per-cell batch chatter.
+`--brief` still preserves `output_preview`; use the full command or
+`cat --output CELL_ID --brief --full-output` when the preview is not enough.
+
+- **Iterative multi-line work:** `create --empty`, then pipe each substantial
+  cell into `ix` with a heredoc. Inspect the just-run cell with
+  `cat --output CELL_ID --brief` before deciding the next `ix`. If the output
+  preview is truncated or the full result matters, use
+  `cat --output CELL_ID --brief --full-output`; this is still a focused cell read.
+  `CELL_ID` is the id reported by the preceding `ix` result. In `--brief`
+  output, use `cell_ids[0]` or `cells[].id`; in the full output, use
+  `inserted_cells[].id` or `job.cell_ids`. If automating extraction, parse that
+  JSON field; do not infer the id from notebook order.
+- **Failed cell recovery:** read the failed cell output, replace the same cell,
+  then execute it again:
+  ```bash
+  uv run hypernote cat nb.ipynb --output CELL_ID --brief
+  uv run hypernote edit replace nb.ipynb CELL_ID -s 'print("fixed")' --brief
+  uv run hypernote exec nb.ipynb CELL_ID --brief
+  ```
+  `edit replace` changes source without running it; old outputs may remain until
+  the following `exec`.
+- **Known-good batch:** use `ix --cells-file` only when intermediate inspection
+  is unnecessary. Batch output may contain one compact result for each executed
+  code cell plus a final aggregate; markdown cells are represented in the final
+  aggregate. The file is a JSON array of cell objects:
+  ```json
+  [
+    {"id": "setup", "type": "code", "source": "value = 21 * 2\nprint(value)"},
+    {"type": "code", "source": "print('batch-ok')"}
+  ]
+  ```
+  Each object supports `source`, optional `type` or `cell_type` (`code` or
+  `markdown`), and optional `id`.
+  ```bash
+  uv run hypernote ix "$notebook_path" --cells-file tmp/cells.json --brief
+  ```
+- **SDK happy path:** use one short Python script that connects, inserts,
+  runs, waits, and prints `nb.status().summary`. Use `nb.status(full=True)` only
+  when you need full source/output details. For proof of a single cell's output,
+  call `nb.status().cell(cell.id).output_preview(full_output=True)`.
 
 ## Core Workflow
 
@@ -128,7 +235,7 @@ Do not use `-s` for multi-line code. Shell quoting will corrupt newlines.
 
 1. Read the error output from `ix`.
 2. Use `cat --cell <cell-id>` or `cat --output <cell-id>` if you need a compact view of the failure.
-3. Fix the source with `edit replace`.
+3. Fix the source with `edit replace PATH CELL_ID -s '...'` or pipe new source through stdin.
 4. Re-run with `exec <cell-id>`.
 5. Continue with the next `ix`.
 
@@ -143,45 +250,18 @@ If batch mode halts early (cell failure, interrupt, or input prompt), the output
 `halt_reason`, `last_processed_cell_id`, `cells_inserted`, and `cells_remaining` so you
 know exactly where to resume. Cells after the halt point were never inserted into the notebook.
 
-## Best Practices
+## Operator Practices
 
 1. Work iteratively: `ix` one cell, read the output, then decide the next cell.
 2. Use `create --empty` so you start with a clean notebook, not a Jupyter-inserted blank cell.
 3. Use heredoc or `--source-file` for multi-line cells. Never pass multi-line code through `-s`.
-4. Prefer the SDK and CLI over raw HTTP unless you are explicitly working on server routes.
-5. Treat Jupyter shared documents as the source of truth. Open or closed JupyterLab tabs must not change correctness.
-6. For agents, prefer default non-TTY JSON output unless you intentionally want background streaming.
+4. Prefer the SDK and CLI over raw HTTP for notebook operation.
+5. Treat Jupyter shared documents as the source of truth. Open or closed JupyterLab tabs should show the same notebook result.
+6. For agents, prefer `--brief` output unless you intentionally need the fuller JSON payload.
 7. Start with `hypernote` itself when you need workspace context and the next best action.
 8. Use `--stream-json` only when you plan to watch the process; otherwise it wastes context.
 9. Start the server with `hypernote setup serve` instead of hand-writing Jupyter flags.
 10. Skip large rich outputs such as `graph.visualize()` in agent automation unless the visualization is the point of the run.
-11. Use unique notebook paths in tests and demos.
+11. Use unique notebook paths in smoke tests and demos.
 12. Move durable notes into `docs/` or `dev/`; keep `tmp/` disposable.
 13. Treat Hypernote jobs, runtime state, and cell attribution as ephemeral coordination state, not durable history.
-14. When changing read/inspection behavior, update the SDK observation helpers before or alongside the CLI so every adapter shares the same summary/truncation rules.
-15. Keep command hints grounded in shipped commands and actual runtime values. Do not document or suggest a focused read flag unless it exists in the CLI.
-16. For contract-heavy changes, test the focused variants, empty/failure states, and alternate valid payload shapes, not just the happy path.
-17. When a helper moves into the SDK or another shared layer, remove the old CLI/test copy in the same change.
-
-## Before You Change Behavior
-
-1. Read [AGENTS.md](AGENTS.md).
-2. Check the current public surface in [docs/cli.md](docs/cli.md) and [docs/sdk.md](docs/sdk.md).
-3. If browser-visible execution behavior changes, check [docs/browser-regression-spec.md](docs/browser-regression-spec.md).
-
-## Verification
-
-Install the right tier first:
-
-```bash
-uv sync --extra dev
-```
-
-Use `uv sync` for Hypernote's default JupyterLab integration stack.
-
-Then run:
-
-```bash
-uv run ruff check src/hypernote tests
-uv run python -m pytest -q
-```

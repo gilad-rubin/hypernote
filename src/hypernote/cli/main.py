@@ -21,6 +21,7 @@ import httpx
 from hypernote import (
     CellHandle,
     CellNotFoundError,
+    CellStatus,
     CellType,
     ExecutionTimeoutError,
     HypernoteError,
@@ -295,6 +296,96 @@ def _cat_output_payload(
             tail=tail,
         ),
     }
+
+
+def _cell_brief_payload(cell: CellHandle, *, outputs_current: bool = True) -> dict[str, Any]:
+    compact = CellStatus.from_handle(
+        cell,
+        include_outputs=outputs_current,
+        include_execution_count=outputs_current,
+    ).compact_dict(max_output_chars=DEFAULT_OUTPUT_PREVIEW_CHARS)
+    return {
+        key: compact[key]
+        for key in (
+            "id",
+            "type",
+            "execution_count",
+            "output_count",
+            "has_error_output",
+            "output_preview",
+            "output_truncated",
+            "output_total_chars",
+        )
+        if key in compact
+    } | ({} if outputs_current else {"outputs_current": False})
+
+
+def _cell_source_brief_payload(cell: CellHandle) -> dict[str, Any]:
+    source_preview = CellStatus.from_handle(cell, include_outputs=False).source_preview()
+    payload = {
+        "id": cell.id,
+        "type": cell.type.value,
+        "execution_count": cell.execution_count,
+        "source_preview": source_preview["text"],
+        "outputs_preserved": len(cell.outputs),
+    }
+    if source_preview.get("truncated"):
+        payload["source_truncated"] = True
+        payload["source_total_chars"] = source_preview["total_chars"]
+    return payload
+
+
+def _brief_job_result(
+    command: str,
+    notebook: Notebook,
+    path: str,
+    job: Job,
+    *,
+    inserted_cells: list[CellHandle],
+) -> dict[str, Any]:
+    cell_ids = list(job.cell_ids or ())
+    outputs_current = job.status in TERMINAL_STATUSES
+    seen: set[str] = set()
+    cells: list[CellHandle] = []
+    for cell in inserted_cells:
+        cells.append(cell)
+        seen.add(cell.id)
+    for cell_id in cell_ids:
+        if cell_id in seen:
+            continue
+        cells.append(notebook.cells[cell_id])
+        seen.add(cell_id)
+    return {
+        "command": command,
+        "path": path,
+        "status": job.status.value,
+        "job_id": job.id,
+        "cell_ids": cell_ids,
+        "cells": [_cell_brief_payload(cell, outputs_current=outputs_current) for cell in cells],
+    }
+
+
+def _brief_status_payload(status: NotebookStatus, *, path: str) -> dict[str, Any]:
+    aggregates = status.aggregates().copy()
+    aggregates.pop("snapshot", None)
+    return {
+        "command": "status",
+        "path": path,
+        **aggregates,
+    }
+
+
+def _validate_brief_run_flags(
+    *,
+    brief: bool,
+    human_flag: bool,
+    watch: bool,
+    stream_json: bool,
+) -> None:
+    if brief and (watch or stream_json or human_flag):
+        raise click.ClickException(
+            "--brief cannot be combined with --watch, --stream-json, or --human"
+        )
 
 
 def _build_cat_payload(
@@ -1211,6 +1302,7 @@ def cli(
 @click.option("--json", "json_flag", is_flag=True, help="Force compact JSON output")
 @click.option("--pretty", is_flag=True, help="Pretty-print JSON output")
 @click.option("--human", "human_flag", is_flag=True, help="Force human-readable output")
+@click.option("--brief", is_flag=True, help="Emit low-noise JSON without hints or snapshots")
 @click.pass_context
 @_cli_errors
 def create_cmd(
@@ -1220,12 +1312,23 @@ def create_cmd(
     json_flag: bool,
     pretty: bool,
     human_flag: bool,
+    brief: bool,
 ) -> None:
     notebook = _sdk_notebook(ctx, path, create=True)
     if empty and getattr(notebook, "_was_created", False):
         for cell in list(notebook.cells):
             cell.delete()
     status = notebook.status()
+    if brief:
+        _echo_json(
+            {
+                "command": "create",
+                "path": notebook.path,
+                "summary": _status_summary(status),
+            },
+            pretty=pretty,
+        )
+        return
     payload = _append_hints(
         {
             "command": "create",
@@ -1265,6 +1368,7 @@ def create_cmd(
 @click.option("--json", "json_flag", is_flag=True, help="Force compact JSON output")
 @click.option("--pretty", is_flag=True, help="Pretty-print JSON output")
 @click.option("--human", "human_flag", is_flag=True, help="Force human-readable output")
+@click.option("--brief", is_flag=True, help="Emit low-noise JSON without hints or snapshots")
 @click.pass_context
 @_cli_errors
 def status_cmd(
@@ -1278,9 +1382,13 @@ def status_cmd(
     json_flag: bool,
     pretty: bool,
     human_flag: bool,
+    brief: bool,
 ) -> None:
     notebook = _sdk_notebook(ctx, path)
-    status = notebook.status(full=True)
+    status = notebook.status(full=False if brief else True)
+    if brief:
+        _echo_json(_brief_status_payload(status, path=notebook.path), pretty=pretty)
+        return
     payload = _build_status_payload(
         status,
         path=notebook.path,
@@ -1358,6 +1466,7 @@ def diff_cmd(
 @click.option("--json", "json_flag", is_flag=True, help="Force compact JSON output")
 @click.option("--pretty", is_flag=True, help="Pretty-print JSON output")
 @click.option("--human", "human_flag", is_flag=True, help="Force human-readable output")
+@click.option("--brief", is_flag=True, help="Emit low-noise JSON without hints")
 @click.pass_context
 @_cli_errors
 def cat_cmd(
@@ -1373,6 +1482,7 @@ def cat_cmd(
     json_flag: bool,
     pretty: bool,
     human_flag: bool,
+    brief: bool,
 ) -> None:
     selected_modes = sum(
         bool(value) for value in (cell_id, output_cell_id, tail_output_cell_id)
@@ -1390,6 +1500,12 @@ def cat_cmd(
         output_cell_id=output_cell_id,
         tail_output_cell_id=tail_output_cell_id,
     )
+    if brief:
+        if output_cell_id or tail_output_cell_id:
+            payload.pop("summary", None)
+        payload.pop("hints", None)
+        _echo_json(payload, pretty=pretty)
+        return
     payload = _append_hints(payload, _cat_hints(notebook.path))
     mode = "pretty" if pretty else _final_output_mode(json_flag=json_flag, human_flag=human_flag)
     _render_result(payload, mode=mode, human_renderer=lambda: _human_cat(payload))
@@ -1409,7 +1525,14 @@ def _run_command_output(
     stream_json: bool,
     progress: str | None,
     timeout: float | None = None,
+    brief: bool = False,
 ) -> None:
+    _validate_brief_run_flags(
+        brief=brief,
+        human_flag=human_flag,
+        watch=watch,
+        stream_json=stream_json,
+    )
     mode = _run_output_mode(
         json_flag=json_flag,
         human_flag=human_flag,
@@ -1439,6 +1562,19 @@ def _run_command_output(
     elif job.status not in TERMINAL_STATUSES:
         job.wait()
 
+    if brief:
+        _echo_json(
+            _brief_job_result(
+                command,
+                notebook,
+                path,
+                job,
+                inserted_cells=inserted_cells,
+            ),
+            pretty=pretty,
+        )
+        return
+
     payload = _job_result(command, path, job, inserted_cells=inserted_cells)
     if mode == "json":
         _echo_json(payload, pretty=pretty)
@@ -1467,6 +1603,11 @@ def _run_command_output(
 @click.option("--stream-json", is_flag=True, help="Force JSONL event streaming")
 @click.option("--progress", type=PROGRESS_CHOICES, help="Streaming verbosity")
 @click.option("--timeout", type=float, help="Maximum seconds to wait")
+@click.option(
+    "--brief",
+    is_flag=True,
+    help="Emit low-noise JSON without hints or per-cell batch chatter",
+)
 @click.pass_context
 @_cli_errors
 def ix_cmd(
@@ -1486,7 +1627,14 @@ def ix_cmd(
     stream_json: bool,
     progress: str | None,
     timeout: float | None,
+    brief: bool,
 ) -> None:
+    _validate_brief_run_flags(
+        brief=brief,
+        human_flag=human_flag,
+        watch=watch,
+        stream_json=stream_json,
+    )
     notebook = _sdk_notebook(ctx, path)
     cells = _read_cells_payload(
         source=source,
@@ -1520,20 +1668,24 @@ def ix_cmd(
             final_job = job
             if no_wait:
                 break
-            _run_command_output(
-                notebook=notebook,
-                job=job,
-                command="ix",
-                path=path,
-                inserted_cells=[inserted],
-                json_flag=json_flag if len(cells) == 1 else True,
-                pretty=pretty,
-                human_flag=human_flag if len(cells) == 1 else False,
-                watch=watch if len(cells) == 1 else False,
-                stream_json=stream_json if len(cells) == 1 else False,
-                progress=progress,
-                timeout=timeout,
-            )
+            if brief and len(cells) > 1:
+                job.wait(timeout=timeout) if timeout is not None else job.wait()
+            else:
+                _run_command_output(
+                    notebook=notebook,
+                    job=job,
+                    command="ix",
+                    path=path,
+                    inserted_cells=[inserted],
+                    json_flag=json_flag if len(cells) == 1 else True,
+                    pretty=pretty,
+                    human_flag=human_flag if len(cells) == 1 else False,
+                    watch=watch if len(cells) == 1 else False,
+                    stream_json=stream_json if len(cells) == 1 else False,
+                    progress=progress,
+                    timeout=timeout,
+                    brief=brief if len(cells) == 1 else False,
+                )
             if job.status in {JobStatus.FAILED, JobStatus.INTERRUPTED, JobStatus.AWAITING_INPUT}:
                 halted_early = index < len(cells) - 1
                 halt_reason = _halt_reason(job.status) if halted_early else None
@@ -1549,7 +1701,9 @@ def ix_cmd(
             "cells_inserted": len(inserted_cells),
             "cells_total": len(cells),
             "results": [
-                {
+                _cell_brief_payload(cell)
+                if brief
+                else {
                     "cell_id": cell.id,
                     "cell_type": cell.type.value,
                     "execution_count": cell.execution_count,
@@ -1566,6 +1720,16 @@ def ix_cmd(
         return
 
     if final_job is None:
+        if brief:
+            payload = {
+                "command": "ix",
+                "path": path,
+                "status": "ok",
+                "cell_ids": [cell.id for cell in inserted_cells],
+                "cells": [_cell_brief_payload(cell) for cell in inserted_cells],
+            }
+            _echo_json(payload, pretty=pretty)
+            return
         payload = {
             "command": "ix",
             "path": path,
@@ -1584,7 +1748,11 @@ def ix_cmd(
         return
 
     if no_wait:
-        payload = _job_result("ix", path, final_job, inserted_cells=inserted_cells)
+        payload = (
+            _brief_job_result("ix", notebook, path, final_job, inserted_cells=inserted_cells)
+            if brief
+            else _job_result("ix", path, final_job, inserted_cells=inserted_cells)
+        )
         _echo_json(payload, pretty=pretty or _stdout_is_tty())
 
 
@@ -1599,6 +1767,7 @@ def ix_cmd(
 @click.option("--stream-json", is_flag=True, help="Force JSONL event streaming")
 @click.option("--progress", type=PROGRESS_CHOICES, help="Streaming verbosity")
 @click.option("--timeout", type=float, help="Maximum seconds to wait")
+@click.option("--brief", is_flag=True, help="Emit low-noise JSON without hints")
 @click.pass_context
 @_cli_errors
 def exec_cmd(
@@ -1613,7 +1782,14 @@ def exec_cmd(
     stream_json: bool,
     progress: str | None,
     timeout: float | None,
+    brief: bool,
 ) -> None:
+    _validate_brief_run_flags(
+        brief=brief,
+        human_flag=human_flag,
+        watch=watch,
+        stream_json=stream_json,
+    )
     if not cell_ids:
         raise click.ClickException("Provide at least one cell id")
     notebook = _sdk_notebook(ctx, path)
@@ -1624,10 +1800,12 @@ def exec_cmd(
 
     job = notebook.run(*cell_ids)
     if no_wait:
-        _echo_json(
-            _job_result("exec", path, job, inserted_cells=[]),
-            pretty=pretty or _stdout_is_tty(),
+        payload = (
+            _brief_job_result("exec", notebook, path, job, inserted_cells=[])
+            if brief
+            else _job_result("exec", path, job, inserted_cells=[])
         )
+        _echo_json(payload, pretty=pretty or _stdout_is_tty())
         return
 
     _run_command_output(
@@ -1643,6 +1821,7 @@ def exec_cmd(
         stream_json=stream_json,
         progress=progress,
         timeout=timeout,
+        brief=brief,
     )
 
 
@@ -1781,7 +1960,11 @@ def _edit_output(
     pretty: bool,
     human_flag: bool,
     human_text: str,
+    brief: bool = False,
 ) -> None:
+    if brief:
+        _echo_json(payload, pretty=pretty)
+        return
     mode = "pretty" if pretty else _final_output_mode(json_flag=json_flag, human_flag=human_flag)
     _render_result(payload, mode=mode, human_renderer=lambda: human_text)
 
@@ -1874,6 +2057,7 @@ def edit_insert_markdown_cmd(
 @click.option("--json", "json_flag", is_flag=True)
 @click.option("--pretty", is_flag=True)
 @click.option("--human", "human_flag", is_flag=True)
+@click.option("--brief", is_flag=True, help="Emit low-noise JSON without preserved outputs")
 @click.pass_context
 @_cli_errors
 def edit_replace_cmd(
@@ -1885,15 +2069,21 @@ def edit_replace_cmd(
     json_flag: bool,
     pretty: bool,
     human_flag: bool,
+    brief: bool,
 ) -> None:
     notebook = _sdk_notebook(ctx, path)
     cell = notebook.cells[cell_id].replace(_read_text(source, source_file))
     _edit_output(
-        payload={"command": "edit.replace", "path": path, "cell": _cell_payload(cell)},
+        payload={
+            "command": "edit.replace",
+            "path": path,
+            "cell": _cell_source_brief_payload(cell) if brief else _cell_payload(cell),
+        },
         json_flag=json_flag,
         pretty=pretty,
         human_flag=human_flag,
         human_text=f"Replaced {cell.id}",
+        brief=brief,
     )
 
 

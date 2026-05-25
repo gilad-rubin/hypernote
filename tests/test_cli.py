@@ -12,6 +12,11 @@ from click.testing import CliRunner
 from hypernote import CellType, ChangeKind, JobStatus, RuntimeStatus
 from hypernote.cli import main as cli_main
 from hypernote.cli.main import cli
+from hypernote.sdk import _normalize_preview_text, _output_text
+
+
+def _fake_output_text(output: dict, *, preserve_lines: bool = False) -> str:
+    return _normalize_preview_text(_output_text(output), preserve_lines=preserve_lines)
 
 
 class FakeJob:
@@ -245,7 +250,7 @@ class FakeCellStatus:
         if full_source:
             entry["source"] = self.source
         if self.outputs:
-            text = str(self.outputs[-1].get("text", ""))
+            text = _fake_output_text(self.outputs[-1])
             preview = text[:max_output_chars] + ("…" if len(text) > max_output_chars else "")
             entry["output_preview"] = preview
             if len(text) > max_output_chars:
@@ -258,7 +263,7 @@ class FakeCellStatus:
         if include_outputs:
             summarized = []
             for output in self.outputs:
-                text = str(output.get("text", ""))
+                text = _fake_output_text(output)
                 item = {"output_type": output.get("output_type", "unknown"), "text": text}
                 if len(text) > max_output_chars:
                     item["text"] = text[:max_output_chars] + "…"
@@ -281,7 +286,7 @@ class FakeCellStatus:
     ) -> dict:
         outputs = []
         for output in self.outputs:
-            text = str(output.get("text", ""))
+            text = _fake_output_text(output, preserve_lines=True)
             item = {"output_type": output.get("output_type", "unknown"), "text": text}
             if len(text) > max_chars:
                 item["text"] = text[:max_chars] + "…"
@@ -433,6 +438,7 @@ class FakeNotebook:
         self._order: list[str] = []
         self.created_jobs: list[FakeJob] = []
         self.next_job_transitions: list[list[dict]] = []
+        self.status_full_args: list[bool] = []
         self.interrupted = False
         self.restarted = False
 
@@ -460,6 +466,7 @@ class FakeNotebook:
         self.interrupted = True
 
     def status(self, *, full: bool = False) -> FakeNotebookStatus:  # noqa: ARG002
+        self.status_full_args.append(full)
         return FakeNotebookStatus(self, diff=False)
 
     def diff(self, *, snapshot, full: bool = False) -> FakeNotebookStatus:  # noqa: ARG002
@@ -509,8 +516,9 @@ def test_cli_help(runner):
         assert cmd in result.output
 
 
-def test_cli_home_view_reports_server_state_and_hints(runner, monkeypatch):
+def test_cli_home_view_reports_server_state_and_hints(runner, monkeypatch, tmp_path):
     monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    monkeypatch.chdir(tmp_path)
 
     class FakeControl:
         def list_jobs(self) -> dict:
@@ -565,6 +573,179 @@ def test_ix_non_tty_returns_compact_json_by_default(runner, fake_notebooks, monk
     assert payload["inserted_cells"][0]["id"] == "cell-1"
     assert any("hypernote cat demo.ipynb" in hint for hint in payload["hints"])
     assert any("hypernote status demo.ipynb" in hint for hint in payload["hints"])
+
+
+def test_ix_brief_returns_low_noise_json(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    nb.next_job_transitions.append(
+        [
+            {
+                "status": JobStatus.SUCCEEDED,
+                "outputs": {
+                    "cell-1": [{"output_type": "stream", "name": "stdout", "text": ["42\n"]}]
+                },
+                "execution_counts": {"cell-1": 1},
+            }
+        ]
+    )
+
+    result = runner.invoke(cli, ["ix", "demo.ipynb", "-s", "print(42)", "--brief"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload == {
+        "command": "ix",
+        "path": "demo.ipynb",
+        "status": "succeeded",
+        "job_id": "job-1",
+        "cell_ids": ["cell-1"],
+        "cells": [
+            {
+                "id": "cell-1",
+                "type": "code",
+                "execution_count": 1,
+                "output_count": 1,
+                "has_error_output": False,
+                "output_preview": "42",
+            }
+        ],
+    }
+
+
+def test_exec_brief_includes_rerun_cell_output_preview(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    nb.cells.insert_code("print(42)", id="code-1")
+    nb.next_job_transitions.append(
+        [
+            {
+                "status": JobStatus.SUCCEEDED,
+                "outputs": {
+                    "code-1": [{"output_type": "stream", "name": "stdout", "text": "42\n"}]
+                },
+                "execution_counts": {"code-1": 2},
+            }
+        ]
+    )
+
+    result = runner.invoke(cli, ["exec", "demo.ipynb", "code-1", "--brief"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "exec"
+    assert payload["status"] == "succeeded"
+    assert payload["cell_ids"] == ["code-1"]
+    assert payload["cells"][0]["id"] == "code-1"
+    assert payload["cells"][0]["output_preview"] == "42"
+    assert "hints" not in payload
+
+
+def test_ix_brief_rejects_conflicting_modes_before_insert(
+    runner,
+    fake_notebooks,
+    monkeypatch,
+):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+
+    result = runner.invoke(
+        cli,
+        ["ix", "demo.ipynb", "-s", "print(1)", "--brief", "--no-wait", "--human"],
+    )
+
+    assert result.exit_code != 0
+    assert "--brief cannot be combined" in result.output
+    assert nb._order == []
+    assert nb.created_jobs == []
+
+
+def test_ix_batch_brief_rejects_stream_json_before_insert(
+    runner,
+    fake_notebooks,
+    monkeypatch,
+):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+
+    result = runner.invoke(
+        cli,
+        [
+            "ix",
+            "demo.ipynb",
+            "--brief",
+            "--stream-json",
+            "--cells-json",
+            json.dumps(
+                [
+                    {"id": "intro-md", "type": "markdown", "source": "# Intro"},
+                    {"id": "setup-cell", "type": "code", "source": "print(1)"},
+                ]
+            ),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--brief cannot be combined" in result.output
+    assert nb._order == []
+    assert nb.created_jobs == []
+
+
+def test_exec_brief_rejects_conflicting_modes_before_run(
+    runner,
+    fake_notebooks,
+    monkeypatch,
+):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    nb.cells.insert_code("print(1)", id="code-1")
+
+    result = runner.invoke(
+        cli,
+        ["exec", "demo.ipynb", "code-1", "--brief", "--no-wait", "--human"],
+    )
+
+    assert result.exit_code != 0
+    assert "--brief cannot be combined" in result.output
+    assert nb.created_jobs == []
+
+
+def test_exec_brief_no_wait_marks_cell_outputs_not_current(
+    runner,
+    fake_notebooks,
+    monkeypatch,
+):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    cell = nb.cells.insert_code("print(42)", id="code-1")
+    nb._cells[cell.id]["outputs"] = [
+        {"output_type": "stream", "name": "stdout", "text": "old value\n"}
+    ]
+    nb._cells[cell.id]["execution_count"] = 1
+    nb.next_job_transitions.append(
+        [
+            {
+                "status": JobStatus.SUCCEEDED,
+                "outputs": {
+                    "code-1": [
+                        {"output_type": "stream", "name": "stdout", "text": "new value\n"}
+                    ]
+                },
+                "execution_counts": {"code-1": 2},
+            }
+        ]
+    )
+
+    result = runner.invoke(cli, ["exec", "demo.ipynb", "code-1", "--brief", "--no-wait"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["status"] == "running"
+    assert payload["cells"][0]["id"] == "code-1"
+    assert payload["cells"][0]["execution_count"] is None
+    assert payload["cells"][0]["output_count"] == 0
+    assert payload["cells"][0]["outputs_current"] is False
+    assert "output_preview" not in payload["cells"][0]
 
 
 def test_ix_tty_streams_human_progress_by_default(runner, fake_notebooks, monkeypatch):
@@ -727,6 +908,173 @@ def test_batch_ix_reports_partial_state_after_failure(runner, fake_notebooks, mo
     assert [entry["cell_id"] for entry in payload["results"]] == ["intro-md", "setup-cell"]
 
 
+def test_batch_ix_brief_reports_partial_state_after_failure(
+    runner,
+    fake_notebooks,
+    monkeypatch,
+):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    nb.next_job_transitions.append(
+        [
+            {
+                "status": JobStatus.FAILED,
+                "outputs": {
+                    "setup-cell": [
+                        {
+                            "output_type": "error",
+                            "ename": "RuntimeError",
+                            "evalue": "boom",
+                            "traceback": ["RuntimeError: boom"],
+                        }
+                    ]
+                },
+                "execution_counts": {"setup-cell": 1},
+            }
+        ]
+    )
+
+    result = runner.invoke(
+        cli,
+        [
+            "ix",
+            "demo.ipynb",
+            "--brief",
+            "--cells-json",
+            json.dumps(
+                [
+                    {"id": "intro-md", "type": "markdown", "source": "# Intro"},
+                    {"id": "setup-cell", "type": "code", "source": "raise RuntimeError('boom')"},
+                    {"id": "later-cell", "type": "code", "source": "print('later')"},
+                ]
+            ),
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["status"] == "error"
+    assert payload["halt_reason"] == "job_failed"
+    assert payload["last_processed_cell_id"] == "setup-cell"
+    assert payload["cells_inserted"] == 2
+    assert payload["cells_total"] == 3
+    assert payload["cells_remaining"] == 1
+    assert [entry["id"] for entry in payload["results"]] == ["intro-md", "setup-cell"]
+    assert payload["results"][1]["has_error_output"] is True
+    assert "hints" not in payload
+
+
+def test_batch_ix_brief_emits_only_final_aggregate_with_output_previews(
+    runner,
+    fake_notebooks,
+    monkeypatch,
+):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    nb.next_job_transitions.extend(
+        [
+            [
+                {
+                    "status": JobStatus.SUCCEEDED,
+                    "outputs": {
+                        "setup-cell": [
+                            {"output_type": "stream", "name": "stdout", "text": "setup ok\n"}
+                        ]
+                    },
+                    "execution_counts": {"setup-cell": 1},
+                }
+            ],
+            [
+                {
+                    "status": JobStatus.SUCCEEDED,
+                    "outputs": {
+                        "final-cell": [
+                            {
+                                "output_type": "stream",
+                                "name": "stdout",
+                                "text": "final 42\n",
+                            }
+                        ]
+                    },
+                    "execution_counts": {"final-cell": 2},
+                }
+            ],
+        ]
+    )
+
+    result = runner.invoke(
+        cli,
+        [
+            "ix",
+            "demo.ipynb",
+            "--brief",
+            "--cells-json",
+            json.dumps(
+                [
+                    {"id": "intro-md", "type": "markdown", "source": "# Intro"},
+                    {"id": "setup-cell", "type": "code", "source": "print('setup ok')"},
+                    {"id": "final-cell", "type": "code", "source": "print('final 42')"},
+                ]
+            ),
+        ],
+    )
+
+    assert result.exit_code == 0
+    lines = result.output.strip().splitlines()
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload["status"] == "ok"
+    assert payload["cells_inserted"] == 3
+    assert payload["cells_total"] == 3
+    assert "hints" not in payload
+    assert [entry["id"] for entry in payload["results"]] == [
+        "intro-md",
+        "setup-cell",
+        "final-cell",
+    ]
+    assert payload["results"][0]["output_count"] == 0
+    assert payload["results"][1]["output_preview"] == "setup ok"
+    assert payload["results"][2]["output_preview"] == "final 42"
+
+
+def test_markdown_ix_brief_returns_low_noise_insert_payload(
+    runner,
+    fake_notebooks,
+    monkeypatch,
+):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+
+    result = runner.invoke(
+        cli,
+        [
+            "ix",
+            "demo.ipynb",
+            "--cells-json",
+            json.dumps([{"id": "intro-md", "type": "markdown", "source": "# Intro"}]),
+            "--brief",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload == {
+        "command": "ix",
+        "path": "demo.ipynb",
+        "status": "ok",
+        "cell_ids": ["intro-md"],
+        "cells": [
+            {
+                "id": "intro-md",
+                "type": "markdown",
+                "execution_count": None,
+                "output_count": 0,
+                "has_error_output": False,
+            }
+        ],
+    }
+
+
 def test_ix_failure_returns_repair_hints(runner, fake_notebooks, monkeypatch):
     monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
     nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
@@ -751,6 +1099,39 @@ def test_edit_replace_maps_to_sdk_mutation(runner, fake_notebooks, monkeypatch):
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["cell"]["source"] == "print(2)"
+
+
+def test_edit_replace_brief_omits_stale_outputs(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    cell = nb.cells.insert_code("raise RuntimeError('boom')", id="code-1")
+    nb._cells[cell.id]["outputs"] = [
+        {
+            "output_type": "error",
+            "ename": "RuntimeError",
+            "evalue": "boom",
+            "traceback": ["RuntimeError: boom"],
+        }
+    ]
+
+    result = runner.invoke(
+        cli,
+        ["edit", "replace", "demo.ipynb", "code-1", "-s", "print(2)", "--brief"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload == {
+        "command": "edit.replace",
+        "path": "demo.ipynb",
+        "cell": {
+            "id": "code-1",
+            "type": "code",
+            "execution_count": None,
+            "source_preview": "print(2)",
+            "outputs_preserved": 1,
+        },
+    }
 
 
 def test_status_and_diff_surface_observation_model(runner, fake_notebooks, monkeypatch):
@@ -796,6 +1177,24 @@ def test_status_returns_summary_first_payload_with_hints_and_truncation(
     assert "use --full" in cell["source_hint"]
     assert "use --full-output" in cell["output_hint"]
     assert any("hypernote cat demo.ipynb" in hint for hint in payload["hints"])
+
+
+def test_status_brief_omits_snapshot_and_hints(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    nb.cells.insert_code("print(1)", id="code-1")
+
+    result = runner.invoke(cli, ["status", "demo.ipynb", "--brief"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "status"
+    assert payload["cells_total"] == 1
+    assert payload["summary"]["cell_count"] == 1
+    assert "snapshot" not in payload
+    assert "hints" not in payload
+    assert "cells" not in payload
+    assert nb.status_full_args == [False]
 
 
 def test_cat_defaults_to_compact_cells_and_truncates_outputs(runner, fake_notebooks, monkeypatch):
@@ -937,6 +1336,30 @@ def test_cat_output_payload_keeps_command_and_path_envelope(
     assert payload["cell_id"] == "code-1"
     assert payload["selected_cell_id"] == "code-1"
     assert payload["summary"]["output_count"] == 1
+
+
+def test_cat_output_brief_keeps_output_without_summary_or_hints(
+    runner,
+    fake_notebooks,
+    monkeypatch,
+):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    cell = nb.cells.insert_code("print('hello')", id="code-1")
+    nb._cells[cell.id]["outputs"] = [
+        {"output_type": "stream", "name": "stdout", "text": ["hello\n"]}
+    ]
+
+    result = runner.invoke(cli, ["cat", "demo.ipynb", "--output", "code-1", "--brief"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "cat"
+    assert payload["path"] == "demo.ipynb"
+    assert payload["cell_id"] == "code-1"
+    assert payload["outputs"][0]["text"] == "hello\n"
+    assert "summary" not in payload
+    assert "hints" not in payload
 
 
 def test_cat_tail_output_payload_surfaces_tail_truncation_metadata(

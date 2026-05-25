@@ -18,4 +18,6 @@ lib/
 .jupyter/
 .agent-repl/
 tmp/
-vscode-extension/out/
+vscode-extension/
+dev/vscode-extension.md
+docs/vscode-extension.md

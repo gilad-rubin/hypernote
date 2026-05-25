@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shlex
 import time
 import urllib.parse
@@ -27,6 +28,7 @@ from hypernote.errors import (
 SUMMARY_SOURCE_CHARS = 120
 SUMMARY_OUTPUT_TEXT_CHARS = 80
 DEFAULT_READ_OUTPUT_CHARS = 400
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 class CellType(str, Enum):
@@ -82,6 +84,25 @@ class CellStatus:
     source: str | None
     outputs: tuple[dict[str, Any], ...] | None
     execution_count: int | None
+
+    @classmethod
+    def from_handle(
+        cls,
+        cell: Any,
+        *,
+        include_outputs: bool = True,
+        include_execution_count: bool = True,
+    ) -> CellStatus:
+        """Build observation state from a live cell handle."""
+        return cls(
+            id=cell.id,
+            type=cell.type,
+            changed=False,
+            change_kinds=(),
+            source=cell.source,
+            outputs=tuple(cell.outputs) if include_outputs else (),
+            execution_count=cell.execution_count if include_execution_count else None,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -181,6 +202,7 @@ class CellStatus:
                     output,
                     max_chars=max_chars,
                     full_output=full_output,
+                    preserve_lines=True,
                 )
                 for output in outputs
             ],
@@ -190,6 +212,7 @@ class CellStatus:
                 _output_text(outputs[-1]),
                 limit=max_chars,
                 full=full_output,
+                preserve_lines=True,
             )
             payload["tail_output"] = tail_preview["text"]
             if tail_preview.get("truncated"):
@@ -1110,8 +1133,11 @@ def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def _normalize_preview_text(value: str) -> str:
-    return " ".join(value.split())
+def _normalize_preview_text(value: str, *, preserve_lines: bool = False) -> str:
+    text = ANSI_ESCAPE_RE.sub("", value)
+    if preserve_lines:
+        return text
+    return " ".join(text.split())
 
 
 def _truncate_text(
@@ -1119,10 +1145,11 @@ def _truncate_text(
     *,
     limit: int,
     full: bool = False,
+    preserve_lines: bool = False,
 ) -> tuple[str | None, dict[str, Any] | None]:
     if value is None:
         return None, None
-    normalized = _normalize_preview_text(value)
+    normalized = _normalize_preview_text(value, preserve_lines=preserve_lines)
     if full or limit <= 0 or len(normalized) <= limit:
         return normalized, None
     truncated = normalized[: max(limit - 1, 0)].rstrip()
@@ -1136,8 +1163,14 @@ def _render_text_preview(
     *,
     limit: int,
     full: bool = False,
+    preserve_lines: bool = False,
 ) -> dict[str, Any]:
-    text, truncation = _truncate_text(value, limit=limit, full=full)
+    text, truncation = _truncate_text(
+        value,
+        limit=limit,
+        full=full,
+        preserve_lines=preserve_lines,
+    )
     payload: dict[str, Any] = {"text": text}
     if truncation is not None:
         payload.update(truncation)
@@ -1146,7 +1179,10 @@ def _render_text_preview(
 
 def _output_text(output: dict[str, Any]) -> str:
     if output.get("output_type") == "stream":
-        return str(output.get("text", ""))
+        text_value = output.get("text", "")
+        if isinstance(text_value, list):
+            return "".join(str(part) for part in text_value)
+        return str(text_value)
     if output.get("output_type") == "error":
         traceback = output.get("traceback") or ()
         if traceback:
@@ -1189,9 +1225,15 @@ def _summarize_output(
     *,
     max_chars: int = SUMMARY_OUTPUT_TEXT_CHARS,
     full_output: bool = False,
+    preserve_lines: bool = False,
 ) -> dict[str, Any]:
     summary = {"output_type": output.get("output_type", "unknown")}
-    text_payload = _render_text_preview(_output_text(output), limit=max_chars, full=full_output)
+    text_payload = _render_text_preview(
+        _output_text(output),
+        limit=max_chars,
+        full=full_output,
+        preserve_lines=preserve_lines,
+    )
     summary["text"] = text_payload["text"]
     if text_payload.get("truncated"):
         summary["truncated"] = True

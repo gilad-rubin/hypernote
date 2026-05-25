@@ -325,6 +325,53 @@ def test_status_compact_dict_and_cell_helpers():
     assert output_payload["tail_output"]
 
 
+def test_stream_output_lists_are_normalized_for_previews():
+    state, transport = _make_transport()
+    nb = hypernote.connect(
+        "tmp/sdk-list-stream.ipynb",
+        create=True,
+        server="http://test",
+        transport=transport,
+    )
+    cell = nb.cells.insert_code("print('hello')", id="list-stream-cell")
+    stored_cell = state["notebooks"]["tmp/sdk-list-stream.ipynb"]["cells"][0]
+    stored_cell["outputs"] = [
+        {"output_type": "stream", "name": "stdout", "text": ["hello", " world\n"]}
+    ]
+
+    status = nb.status(full=True)
+    preview = status.cell(cell.id).output_preview(full_output=True)
+    payload = status.cell(cell.id).output_payload(full_output=True)
+
+    assert preview["text"] == "hello world"
+    assert payload["outputs"][0]["text"] == "hello world\n"
+
+
+def test_output_previews_strip_ansi_escape_sequences():
+    state, transport = _make_transport()
+    nb = hypernote.connect(
+        "tmp/sdk-ansi-output.ipynb",
+        create=True,
+        server="http://test",
+        transport=transport,
+    )
+    cell = nb.cells.insert_code("1 / 0", id="ansi-error-cell")
+    stored_cell = state["notebooks"]["tmp/sdk-ansi-output.ipynb"]["cells"][0]
+    stored_cell["outputs"] = [
+        {
+            "output_type": "error",
+            "ename": "ZeroDivisionError",
+            "evalue": "division by zero",
+            "traceback": ["\x1b[31mZeroDivisionError\x1b[0m: division by zero"],
+        }
+    ]
+
+    status = nb.status(full=True)
+    preview = status.cell(cell.id).output_preview(full_output=True)
+
+    assert preview["text"] == "ZeroDivisionError: division by zero"
+
+
 def test_diff_reports_added_source_edit_and_execution_changes():
     _, transport = _make_transport()
     nb = hypernote.connect("tmp/sdk.ipynb", create=True, server="http://test", transport=transport)
