@@ -298,15 +298,11 @@ def _cat_output_payload(
     }
 
 
-def _cell_brief_payload(cell: CellHandle) -> dict[str, Any]:
-    compact = CellStatus(
-        id=cell.id,
-        type=cell.type,
-        changed=False,
-        change_kinds=(),
-        source=cell.source,
-        outputs=cell.outputs,
-        execution_count=cell.execution_count,
+def _cell_brief_payload(cell: CellHandle, *, outputs_current: bool = True) -> dict[str, Any]:
+    compact = CellStatus.from_handle(
+        cell,
+        include_outputs=outputs_current,
+        include_execution_count=outputs_current,
     ).compact_dict(max_output_chars=DEFAULT_OUTPUT_PREVIEW_CHARS)
     return {
         key: compact[key]
@@ -321,19 +317,11 @@ def _cell_brief_payload(cell: CellHandle) -> dict[str, Any]:
             "output_total_chars",
         )
         if key in compact
-    }
+    } | ({} if outputs_current else {"outputs_current": False})
 
 
 def _cell_source_brief_payload(cell: CellHandle) -> dict[str, Any]:
-    source_preview = CellStatus(
-        id=cell.id,
-        type=cell.type,
-        changed=False,
-        change_kinds=(),
-        source=cell.source,
-        outputs=(),
-        execution_count=cell.execution_count,
-    ).source_preview()
+    source_preview = CellStatus.from_handle(cell, include_outputs=False).source_preview()
     payload = {
         "id": cell.id,
         "type": cell.type.value,
@@ -356,6 +344,7 @@ def _brief_job_result(
     inserted_cells: list[CellHandle],
 ) -> dict[str, Any]:
     cell_ids = list(job.cell_ids or ())
+    outputs_current = job.status in TERMINAL_STATUSES
     seen: set[str] = set()
     cells: list[CellHandle] = []
     for cell in inserted_cells:
@@ -372,7 +361,7 @@ def _brief_job_result(
         "status": job.status.value,
         "job_id": job.id,
         "cell_ids": cell_ids,
-        "cells": [_cell_brief_payload(cell) for cell in cells],
+        "cells": [_cell_brief_payload(cell, outputs_current=outputs_current) for cell in cells],
     }
 
 
@@ -384,6 +373,19 @@ def _brief_status_payload(status: NotebookStatus, *, path: str) -> dict[str, Any
         "path": path,
         **aggregates,
     }
+
+
+def _validate_brief_run_flags(
+    *,
+    brief: bool,
+    human_flag: bool,
+    watch: bool,
+    stream_json: bool,
+) -> None:
+    if brief and (watch or stream_json or human_flag):
+        raise click.ClickException(
+            "--brief cannot be combined with --watch, --stream-json, or --human"
+        )
 
 
 def _build_cat_payload(
@@ -1383,7 +1385,7 @@ def status_cmd(
     brief: bool,
 ) -> None:
     notebook = _sdk_notebook(ctx, path)
-    status = notebook.status(full=True)
+    status = notebook.status(full=False if brief else True)
     if brief:
         _echo_json(_brief_status_payload(status, path=notebook.path), pretty=pretty)
         return
@@ -1525,10 +1527,12 @@ def _run_command_output(
     timeout: float | None = None,
     brief: bool = False,
 ) -> None:
-    if brief and (watch or stream_json or human_flag):
-        raise click.ClickException(
-            "--brief cannot be combined with --watch, --stream-json, or --human"
-        )
+    _validate_brief_run_flags(
+        brief=brief,
+        human_flag=human_flag,
+        watch=watch,
+        stream_json=stream_json,
+    )
     mode = _run_output_mode(
         json_flag=json_flag,
         human_flag=human_flag,
@@ -1625,6 +1629,12 @@ def ix_cmd(
     timeout: float | None,
     brief: bool,
 ) -> None:
+    _validate_brief_run_flags(
+        brief=brief,
+        human_flag=human_flag,
+        watch=watch,
+        stream_json=stream_json,
+    )
     notebook = _sdk_notebook(ctx, path)
     cells = _read_cells_payload(
         source=source,
@@ -1710,6 +1720,16 @@ def ix_cmd(
         return
 
     if final_job is None:
+        if brief:
+            payload = {
+                "command": "ix",
+                "path": path,
+                "status": "ok",
+                "cell_ids": [cell.id for cell in inserted_cells],
+                "cells": [_cell_brief_payload(cell) for cell in inserted_cells],
+            }
+            _echo_json(payload, pretty=pretty)
+            return
         payload = {
             "command": "ix",
             "path": path,
@@ -1764,6 +1784,12 @@ def exec_cmd(
     timeout: float | None,
     brief: bool,
 ) -> None:
+    _validate_brief_run_flags(
+        brief=brief,
+        human_flag=human_flag,
+        watch=watch,
+        stream_json=stream_json,
+    )
     if not cell_ids:
         raise click.ClickException("Provide at least one cell id")
     notebook = _sdk_notebook(ctx, path)

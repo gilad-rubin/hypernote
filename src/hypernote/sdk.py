@@ -85,6 +85,25 @@ class CellStatus:
     outputs: tuple[dict[str, Any], ...] | None
     execution_count: int | None
 
+    @classmethod
+    def from_handle(
+        cls,
+        cell: Any,
+        *,
+        include_outputs: bool = True,
+        include_execution_count: bool = True,
+    ) -> CellStatus:
+        """Build observation state from a live cell handle."""
+        return cls(
+            id=cell.id,
+            type=cell.type,
+            changed=False,
+            change_kinds=(),
+            source=cell.source,
+            outputs=tuple(cell.outputs) if include_outputs else (),
+            execution_count=cell.execution_count if include_execution_count else None,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,

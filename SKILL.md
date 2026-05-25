@@ -85,6 +85,10 @@ runs do not overwrite each other.
 uv run hypernote                   # live workspace dashboard and hints
 uv run hypernote setup doctor            # check for existing server
 uv run hypernote setup serve --no-browser > tmp/hypernote-serve.log 2>&1 &  # only if the API is unreachable and quiet headless setup is desired
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  uv run hypernote setup doctor | grep -q '"hypernote_api"[[:space:]]*:[[:space:]]*"ok"' && break
+  sleep 0.5
+done
 uv run hypernote setup doctor            # readiness check after a cold start
 notebook_path="tmp/demo-$(date +%Y%m%d-%H%M%S).ipynb"
 uv run hypernote create "$notebook_path" --empty --brief
@@ -102,6 +106,10 @@ user requested; the `tmp/` path below is only for disposable smoke tests:
 uv run hypernote setup doctor
 # only if the Hypernote API is unreachable and you do not want setup to open Lab:
 uv run hypernote setup serve --no-browser > tmp/hypernote-serve.log 2>&1 &
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  uv run hypernote setup doctor | grep -q '"hypernote_api"[[:space:]]*:[[:space:]]*"ok"' && break
+  sleep 0.5
+done
 uv run hypernote setup doctor
 notebook_path="tmp/demo-$(date +%Y%m%d-%H%M%S).ipynb"
 uv run hypernote create "$notebook_path" --empty --brief

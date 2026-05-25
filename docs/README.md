@@ -21,8 +21,8 @@ Advanced and contributor docs:
 Runtime Model and Browser Regression Spec are for architecture questions and
 browser-visible behavior changes.
 
-The common operator check is `hypernote setup doctor`. If no Hypernote API is
-reachable, bootstrap the local server with `hypernote setup serve`. Use
+The common operator check is `uv run hypernote setup doctor`. If no Hypernote API is
+reachable, bootstrap the local server with `uv run hypernote setup serve`. Use
 `--no-browser` and redirect the long-running server logs to `tmp/` for quiet
 automation; omit `--no-browser` when the user wants setup to open JupyterLab.
 For agent command loops, use `--brief` on supported commands to keep cell output

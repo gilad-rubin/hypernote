@@ -127,6 +127,8 @@ consumers can share the same summary/truncation rules instead of re-encoding the
   - notebook aggregates plus compact cells in one payload
 - `status.cell(cell_id)`
   - look up a specific `CellStatus` by id
+- `CellStatus.from_handle(cell)`
+  - build SDK observation state from a live `CellHandle`
 - `cell.has_error_output()`
   - whether the cell's outputs include an error
 - `cell.source_preview(full=False, limit=...)`

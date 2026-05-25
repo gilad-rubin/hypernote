@@ -40,6 +40,10 @@ If no Hypernote API is reachable, bootstrap the server:
 ```bash
 # quiet automation form; omit --no-browser if you want setup to open JupyterLab
 uv run hypernote setup serve --no-browser > tmp/hypernote-serve.log 2>&1 &
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  uv run hypernote setup doctor | grep -q '"hypernote_api"[[:space:]]*:[[:space:]]*"ok"' && break
+  sleep 0.5
+done
 uv run hypernote setup doctor
 ```
 
@@ -78,6 +82,10 @@ and keep the run to setup, create, execute:
 uv run hypernote setup doctor
 # only if the Hypernote API is unreachable and quiet headless setup is desired:
 uv run hypernote setup serve --no-browser > tmp/hypernote-serve.log 2>&1 &
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  uv run hypernote setup doctor | grep -q '"hypernote_api"[[:space:]]*:[[:space:]]*"ok"' && break
+  sleep 0.5
+done
 uv run hypernote setup doctor
 notebook_path="tmp/demo-$(date +%Y%m%d-%H%M%S).ipynb"
 uv run hypernote create "$notebook_path" --empty --brief
