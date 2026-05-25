@@ -153,13 +153,36 @@ To hand the notebook to a browser, open
 URL-encode path segments that contain spaces or special URL characters. Simple
 workspace-relative paths such as `tmp/demo.ipynb` can be used directly.
 
-For non-trivial multi-line cells, prefer stdin:
+For non-trivial multi-line cells, prefer stdin. This avoids shell-quoting bugs
+with loops, f-strings, nested quotes, and other source that is easy to corrupt
+before Hypernote receives it:
 
 ```bash
 cat <<'EOF' | uv run hypernote ix "$notebook_path" --brief
 values = [13, 21, 34]
 print(sum(values))
 EOF
+```
+
+For long-running cells, add `--no-wait` so the command returns a `job_id` and
+`cell_ids` immediately while the notebook keeps executing:
+
+```bash
+cat <<'EOF' | uv run hypernote ix "$notebook_path" --no-wait --brief
+import time
+from datetime import datetime
+
+for tick in range(1, 181):
+    stamp = datetime.now().strftime("%H:%M:%S")
+    print(f"tick {tick}/180 at {stamp}", flush=True)
+    time.sleep(1)
+EOF
+```
+
+Use the returned cell id for focused monitoring:
+
+```bash
+uv run hypernote cat "$notebook_path" --tail-output CELL_ID --brief
 ```
 
 ## Batch execution notes
@@ -202,6 +225,8 @@ uv run hypernote exec nb.ipynb CELL_ID --brief
 
 `edit replace` changes source without executing. Existing outputs may remain
 visible until the following `exec` writes new outputs.
+Use `-s` only for short single-line replacements; for multi-line fixes, pipe the
+source through stdin or use `--source-file`.
 Use the cell id from the preceding `ix` result, either `inserted_cells[].id` or
 `job.cell_ids` in the full output, or `cell_ids[0]` / `cells[].id` in
 `--brief` output.

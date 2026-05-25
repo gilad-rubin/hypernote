@@ -150,9 +150,10 @@ command hints, snapshot tokens, raw output payloads, or per-cell batch chatter.
 `cat --output CELL_ID --brief --full-output` when the preview is not enough.
 
 - **Iterative multi-line work:** `create --empty`, then pipe each substantial
-  cell into `ix` with a heredoc. Inspect the just-run cell with
-  `cat --output CELL_ID --brief` before deciding the next `ix`. If the output
-  preview is truncated or the full result matters, use
+  cell into `ix` with a heredoc. This includes loops, long-running cells,
+  f-strings, and any source that contains nested quotes. Inspect the just-run
+  cell with `cat --output CELL_ID --brief` before deciding the next `ix`. If
+  the output preview is truncated or the full result matters, use
   `cat --output CELL_ID --brief --full-output`; this is still a focused cell read.
   `CELL_ID` is the id reported by the preceding `ix` result. In `--brief`
   output, use `cell_ids[0]` or `cells[].id`; in the full output, use
@@ -166,7 +167,8 @@ command hints, snapshot tokens, raw output payloads, or per-cell batch chatter.
   uv run hypernote exec nb.ipynb CELL_ID --brief
   ```
   `edit replace` changes source without running it; old outputs may remain until
-  the following `exec`.
+  the following `exec`. For multi-line replacements, pipe the fixed source
+  through stdin instead of using `-s`.
 - **Known-good batch:** use `ix --cells-file` only when intermediate inspection
   is unnecessary. Batch output may contain one compact result for each executed
   code cell plus a final aggregate; markdown cells are represented in the final
@@ -221,7 +223,27 @@ Three input modes, from simplest to most robust:
    uv run hypernote ix nb.ipynb --source-file path/to/cell.py
    ```
 
-Do not use `-s` for multi-line code. Shell quoting will corrupt newlines.
+Do not use `-s` for multi-line code, loops, f-strings with nested quotes, or
+other non-trivial source. Shell quoting can corrupt the cell before Hypernote
+receives it.
+
+For long-running cells, combine stdin with `--no-wait` so the command returns a
+`job_id` and `cell_ids` immediately while the notebook keeps executing:
+
+```bash
+cat <<'EOF' | uv run hypernote ix nb.ipynb --no-wait --brief
+import time
+from datetime import datetime
+
+for tick in range(1, 181):
+    stamp = datetime.now().strftime("%H:%M:%S")
+    print(f"tick {tick}/180 at {stamp}", flush=True)
+    time.sleep(1)
+EOF
+```
+
+Use the returned cell id for focused monitoring, for example
+`uv run hypernote cat nb.ipynb --tail-output CELL_ID --brief`.
 
 ### Commands
 
@@ -235,7 +257,8 @@ Do not use `-s` for multi-line code. Shell quoting will corrupt newlines.
 
 1. Read the error output from `ix`.
 2. Use `cat --cell <cell-id>` or `cat --output <cell-id>` if you need a compact view of the failure.
-3. Fix the source with `edit replace PATH CELL_ID -s '...'` or pipe new source through stdin.
+3. Fix the source with `edit replace PATH CELL_ID -s '...'` for short single-line
+   code, or pipe new source through stdin for multi-line fixes.
 4. Re-run with `exec <cell-id>`.
 5. Continue with the next `ix`.
 

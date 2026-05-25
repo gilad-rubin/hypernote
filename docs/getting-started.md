@@ -104,7 +104,8 @@ Use:
 - `edit` when you want to change notebook structure without running it
 
 For non-trivial multi-line cells, pipe source through stdin instead of forcing it
-through `-s` shell quoting:
+through `-s` shell quoting. Use this path for loops, long-running cells,
+f-strings, nested quotes, and any source that is easy for the shell to corrupt:
 
 ```bash
 cat <<'EOF' | uv run hypernote ix "$notebook_path" --brief
