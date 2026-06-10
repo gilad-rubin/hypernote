@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -9,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 from click.testing import CliRunner
 
-from hypernote import CellType, ChangeKind, JobStatus, RuntimeStatus
+from hypernote import CellStatus, CellType, ChangeKind, JobStatus, RuntimeStatus
 from hypernote.cli import main as cli_main
 from hypernote.cli.main import cli
 from hypernote.sdk import _normalize_preview_text, _output_text
@@ -273,9 +274,31 @@ class FakeCellStatus:
                         f"truncated, {len(text)} chars total; "
                         "use --full-output to see complete text"
                     )
+                if isinstance(output.get("data"), dict):
+                    item["data_keys"] = sorted(output["data"].keys())
                 summarized.append(item)
             entry["outputs"] = summarized
         return entry
+
+    def _real_cell_status(self) -> CellStatus:
+        return CellStatus(
+            id=self.id,
+            type=self.type,
+            changed=False,
+            change_kinds=self.change_kinds,
+            source=self.source,
+            outputs=self.outputs,
+            execution_count=self.execution_count,
+        )
+
+    def output_mime_bundles(self, *, max_content_chars: int | None = None) -> list[dict]:
+        return self._real_cell_status().output_mime_bundles(max_content_chars=max_content_chars)
+
+    def mime_bundle_payload(self, *, max_content_chars: int | None = None) -> dict:
+        return self._real_cell_status().mime_bundle_payload(max_content_chars=max_content_chars)
+
+    def save_image_outputs(self, directory) -> list[str]:
+        return self._real_cell_status().save_image_outputs(directory)
 
     def output_payload(
         self,
@@ -427,6 +450,12 @@ class FakeNotebookStatus:
             if cell.id == cell_id:
                 return cell
         raise cli_main.CellNotFoundError(cell_id)
+
+    def save_image_outputs(self, directory) -> list[str]:
+        saved: list[str] = []
+        for cell in self.cells:
+            saved.extend(cell.save_image_outputs(directory))
+        return saved
 
 
 class FakeNotebook:
@@ -1464,6 +1493,152 @@ def test_cat_tail_output_payload_surfaces_tail_truncation_metadata(
     assert payload["path"] == "demo.ipynb"
     assert payload["tail_output_truncated"] is True
     assert payload["tail_output_total_chars"] == 500
+
+
+CLI_PNG_SOURCE_BYTES = b"\x89PNG\r\n\x1a\nfake-image-bytes"
+CLI_PNG_BASE64 = base64.b64encode(CLI_PNG_SOURCE_BYTES).decode()
+
+
+def _insert_fake_plot_cell(nb: FakeNotebook, cell_id: str = "plot-1") -> None:
+    nb.cells.insert_code("plt.plot([1, 2, 3])", id=cell_id)
+    nb._cells[cell_id]["outputs"] = [
+        {
+            "output_type": "display_data",
+            "data": {
+                "image/png": CLI_PNG_BASE64,
+                "text/html": "<div>figure</div>",
+                "text/plain": "<Figure size 640x480>",
+            },
+            "metadata": {"image/png": {"width": 640}},
+        }
+    ]
+    nb._cells[cell_id]["execution_count"] = 1
+
+
+def test_cat_mime_returns_raw_bundles_with_truncation(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    _insert_fake_plot_cell(nb)
+
+    result = runner.invoke(cli, ["cat", "demo.ipynb", "--mime", "plot-1", "--max-output", "20"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "cat"
+    assert payload["path"] == "demo.ipynb"
+    assert payload["cell_id"] == "plot-1"
+    assert payload["selected_cell_id"] == "plot-1"
+    assert payload["output_count"] == 1
+    bundle = payload["mime_bundles"][0]
+    assert bundle["output_type"] == "display_data"
+    assert bundle["data"]["image/png"] == CLI_PNG_BASE64[:20]
+    assert bundle["data"]["text/html"] == "<div>figure</div>"
+    assert bundle["data_truncated"]["image/png"] == len(CLI_PNG_BASE64)
+    assert bundle["metadata"] == {"image/png": {"width": 640}}
+
+
+def test_cat_mime_full_output_returns_intact_payloads(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    _insert_fake_plot_cell(nb)
+
+    result = runner.invoke(cli, ["cat", "demo.ipynb", "--mime", "plot-1", "--full-output"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    bundle = payload["mime_bundles"][0]
+    assert bundle["data"]["image/png"] == CLI_PNG_BASE64
+    assert "data_truncated" not in bundle
+
+
+def test_cat_mime_brief_drops_summary_and_hints(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    _insert_fake_plot_cell(nb)
+
+    result = runner.invoke(cli, ["cat", "demo.ipynb", "--mime", "plot-1", "--brief"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "cat"
+    assert payload["mime_bundles"]
+    assert "summary" not in payload
+    assert "hints" not in payload
+
+
+def test_cat_mime_conflicts_with_other_focused_reads(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    _insert_fake_plot_cell(nb)
+
+    result = runner.invoke(cli, ["cat", "demo.ipynb", "--mime", "plot-1", "--output", "plot-1"])
+
+    assert result.exit_code != 0
+    assert "Choose only one" in result.output
+
+
+def test_cat_save_images_writes_decoded_files_and_reports_paths(
+    runner,
+    fake_notebooks,
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    _insert_fake_plot_cell(nb)
+    target = tmp_path / "images"
+
+    result = runner.invoke(
+        cli,
+        ["cat", "demo.ipynb", "--output", "plot-1", "--save-images", str(target)],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "cat"
+    assert payload["cell_id"] == "plot-1"
+    assert payload["saved_images"] == [str(target / "plot-1-out0.png")]
+    assert (target / "plot-1-out0.png").read_bytes() == CLI_PNG_SOURCE_BYTES
+
+
+def test_cat_save_images_without_selector_saves_images_from_all_cells(
+    runner,
+    fake_notebooks,
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    _insert_fake_plot_cell(nb, cell_id="plot-1")
+    _insert_fake_plot_cell(nb, cell_id="plot-2")
+    target = tmp_path / "images"
+
+    result = runner.invoke(cli, ["cat", "demo.ipynb", "--save-images", str(target)])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["saved_images"] == [
+        str(target / "plot-1-out0.png"),
+        str(target / "plot-2-out0.png"),
+    ]
+    assert (target / "plot-2-out0.png").read_bytes() == CLI_PNG_SOURCE_BYTES
+
+
+def test_cat_hints_point_at_save_images_when_image_outputs_present(
+    runner,
+    fake_notebooks,
+    monkeypatch,
+):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    _insert_fake_plot_cell(nb)
+
+    result = runner.invoke(cli, ["cat", "demo.ipynb"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert any("--save-images" in hint for hint in payload["hints"])
+    assert any("plot-1" in hint for hint in payload["hints"])
 
 
 def test_job_get_and_stdin_use_sdk_control(runner, monkeypatch):

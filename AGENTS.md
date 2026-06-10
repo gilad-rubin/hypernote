@@ -34,6 +34,14 @@ focused read instead of reading the whole notebook:
 uv run hypernote cat "$notebook_path" --output CELL_ID --brief --full-output
 ```
 
+For plots and other rich MIME outputs (previewed only as `data_keys`), save
+the images to files and read them, or fetch the raw MIME bundles:
+
+```bash
+uv run hypernote cat "$notebook_path" --output CELL_ID --save-images tmp/plots --brief
+uv run hypernote cat "$notebook_path" --mime CELL_ID --brief
+```
+
 To hand the notebook to a browser, open:
 
 ```text

@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Rich (non-text) cell outputs are now inspectable by agents. The SDK gains
+  `CellStatus.output_mime_bundles()` as the raw MIME-bundle escape hatch behind
+  the summary-first previews, plus `CellStatus.save_image_outputs(directory)`
+  and `NotebookStatus.save_image_outputs(directory)` to decode and write image
+  outputs (png, jpeg, svg) to files.
+- `hypernote cat` gains `--mime CELL_ID` for raw output MIME bundles (base64
+  payloads truncated at `--max-output` unless `--full-output`) and
+  `--save-images DIR` to write image outputs to files and report the saved
+  paths, so agents can read rendered plots directly.
+- `cat` appends a contextual `--save-images` hint when listed cells contain
+  image outputs.
+
 ## 0.4.1 - 2026-05-25
 
 Hypernote now has a low-noise operator path for agents: create notebooks,

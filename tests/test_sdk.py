@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import urllib.parse
 
@@ -511,3 +512,165 @@ def test_missing_cell_raises_key_error():
         pass
     else:  # pragma: no cover
         raise AssertionError("Expected CellNotFoundError")
+
+
+PNG_SOURCE_BYTES = b"\x89PNG\r\n\x1a\nfake-image-bytes"
+PNG_BASE64 = base64.b64encode(PNG_SOURCE_BYTES).decode()
+JPEG_SOURCE_BYTES = b"\xff\xd8\xff\xe0fake-jpeg-bytes"
+JPEG_BASE64 = base64.b64encode(JPEG_SOURCE_BYTES).decode()
+SVG_TEXT = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="4" height="4"/></svg>'
+
+
+def _connect_with_rich_outputs(path: str):
+    state, transport = _make_transport()
+    nb = hypernote.connect(path, create=True, server="http://test", transport=transport)
+    cell = nb.cells.insert_code("plot()", id="plot-cell")
+    stored_cell = state["notebooks"][path]["cells"][0]
+    stored_cell["outputs"] = [
+        {
+            "output_type": "display_data",
+            "data": {
+                "image/png": PNG_BASE64,
+                "text/html": ["<div>", "figure</div>"],
+                "text/plain": "<Figure size 640x480>",
+            },
+            "metadata": {"image/png": {"width": 640}},
+        },
+        {"output_type": "stream", "name": "stdout", "text": ["saved", " figure\n"]},
+    ]
+    stored_cell["execution_count"] = 1
+    return nb, cell
+
+
+def test_output_mime_bundles_return_raw_data_intact():
+    nb, cell = _connect_with_rich_outputs("tmp/sdk-mime-intact.ipynb")
+
+    status = nb.status(full=True)
+    bundles = status.cell(cell.id).output_mime_bundles()
+
+    assert bundles[0] == {
+        "output_type": "display_data",
+        "data": {
+            "image/png": PNG_BASE64,
+            "text/html": "<div>figure</div>",
+            "text/plain": "<Figure size 640x480>",
+        },
+        "metadata": {"image/png": {"width": 640}},
+    }
+    assert bundles[1]["output_type"] == "stream"
+    assert bundles[1]["data"]["text/plain"] == "saved figure\n"
+    assert bundles[1]["metadata"]["stream_name"] == "stdout"
+
+
+def test_output_mime_bundles_truncate_large_payloads_when_limited():
+    nb, cell = _connect_with_rich_outputs("tmp/sdk-mime-truncate.ipynb")
+
+    status = nb.status(full=True)
+    bundles = status.cell(cell.id).output_mime_bundles(max_content_chars=10)
+
+    assert bundles[0]["data"]["image/png"] == PNG_BASE64[:10]
+    assert bundles[0]["data_truncated"]["image/png"] == len(PNG_BASE64)
+    assert "intact payloads" in bundles[0]["hint"]
+
+
+def test_output_mime_bundles_reject_summarized_outputs():
+    nb, cell = _connect_with_rich_outputs("tmp/sdk-mime-summarized.ipynb")
+
+    status = nb.status()
+
+    with pytest.raises(HypernoteError, match="full=True"):
+        status.cell(cell.id).output_mime_bundles()
+
+
+def test_error_output_mime_bundle_carries_traceback_and_metadata():
+    state, transport = _make_transport()
+    nb = hypernote.connect(
+        "tmp/sdk-mime-error.ipynb",
+        create=True,
+        server="http://test",
+        transport=transport,
+    )
+    cell = nb.cells.insert_code("1 / 0", id="boom-cell")
+    stored_cell = state["notebooks"]["tmp/sdk-mime-error.ipynb"]["cells"][0]
+    stored_cell["outputs"] = [
+        {
+            "output_type": "error",
+            "ename": "ZeroDivisionError",
+            "evalue": "division by zero",
+            "traceback": ["Traceback", "ZeroDivisionError: division by zero"],
+        }
+    ]
+
+    bundles = nb.status(full=True).cell(cell.id).output_mime_bundles()
+
+    assert bundles[0]["data"]["text/plain"] == (
+        "Traceback\nZeroDivisionError: division by zero"
+    )
+    assert bundles[0]["metadata"]["ename"] == "ZeroDivisionError"
+    assert bundles[0]["metadata"]["evalue"] == "division by zero"
+
+
+def test_save_image_outputs_decodes_and_writes_files(tmp_path):
+    state, transport = _make_transport()
+    path = "tmp/sdk-save-images.ipynb"
+    nb = hypernote.connect(path, create=True, server="http://test", transport=transport)
+    cell = nb.cells.insert_code("plot()", id="plot-cell")
+    stored_cell = state["notebooks"][path]["cells"][0]
+    stored_cell["outputs"] = [
+        {
+            "output_type": "display_data",
+            "data": {
+                # nbformat may store base64 as list parts with trailing newlines
+                "image/png": [PNG_BASE64[:12] + "\n", PNG_BASE64[12:] + "\n"],
+                "image/svg+xml": SVG_TEXT,
+                "text/plain": "<Figure size 640x480>",
+            },
+            "metadata": {},
+        },
+        {
+            "output_type": "execute_result",
+            "data": {"image/jpeg": JPEG_BASE64},
+            "metadata": {},
+            "execution_count": 1,
+        },
+        {"output_type": "stream", "name": "stdout", "text": "no image here\n"},
+    ]
+
+    status = nb.status(full=True)
+    saved = status.cell(cell.id).save_image_outputs(tmp_path / "images")
+
+    assert saved == [
+        str(tmp_path / "images" / "plot-cell-out0.png"),
+        str(tmp_path / "images" / "plot-cell-out0.svg"),
+        str(tmp_path / "images" / "plot-cell-out1.jpg"),
+    ]
+    assert (tmp_path / "images" / "plot-cell-out0.png").read_bytes() == PNG_SOURCE_BYTES
+    assert (tmp_path / "images" / "plot-cell-out0.svg").read_text() == SVG_TEXT
+    assert (tmp_path / "images" / "plot-cell-out1.jpg").read_bytes() == JPEG_SOURCE_BYTES
+
+
+def test_notebook_status_save_image_outputs_covers_all_cells(tmp_path):
+    nb, _ = _connect_with_rich_outputs("tmp/sdk-save-all.ipynb")
+
+    status = nb.status(full=True)
+    saved = status.save_image_outputs(tmp_path / "all-images")
+
+    assert saved == [str(tmp_path / "all-images" / "plot-cell-out0.png")]
+    assert (tmp_path / "all-images" / "plot-cell-out0.png").read_bytes() == PNG_SOURCE_BYTES
+
+
+def test_save_image_outputs_returns_empty_for_text_only_cells(tmp_path):
+    _, transport = _make_transport()
+    nb = hypernote.connect(
+        "tmp/sdk-save-empty.ipynb",
+        create=True,
+        server="http://test",
+        transport=transport,
+    )
+    cell = nb.cells.insert_code("print('hello')", id="text-cell")
+
+    job = cell.run()
+    assert job.wait().status == JobStatus.SUCCEEDED
+
+    saved = nb.status(full=True).cell(cell.id).save_image_outputs(tmp_path / "none")
+    assert saved == []
