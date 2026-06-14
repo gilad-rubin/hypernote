@@ -273,7 +273,10 @@ class CellStatus:
         outputs = list(self.outputs or ())
         _require_raw_outputs(outputs)
         target = Path(directory)
-        target.mkdir(parents=True, exist_ok=True)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise HypernoteError(f"Could not create image directory {target}: {exc}") from exc
         saved: list[str] = []
         for index, output in enumerate(outputs):
             data = output.get("data")
@@ -286,10 +289,20 @@ class CellStatus:
                 if not isinstance(content, str):
                     continue
                 path = target / f"{_safe_file_stem(self.id)}-out{index}.{extension}"
-                if mime_type == "image/svg+xml":
-                    path.write_text(content)
-                else:
-                    path.write_bytes(base64.b64decode("".join(content.split())))
+                try:
+                    if mime_type == "image/svg+xml":
+                        # nbformat stores SVG as UTF-8 text; pin the encoding so
+                        # non-ASCII labels survive on non-UTF-8 locales.
+                        path.write_text(content, encoding="utf-8")
+                    else:
+                        # ValueError covers binascii.Error from malformed base64.
+                        path.write_bytes(base64.b64decode("".join(content.split())))
+                except ValueError as exc:
+                    raise HypernoteError(
+                        f"Could not decode {mime_type} output for cell {self.id!r}: {exc}"
+                    ) from exc
+                except OSError as exc:
+                    raise HypernoteError(f"Could not write image output to {path}: {exc}") from exc
                 saved.append(str(path))
         return saved
 

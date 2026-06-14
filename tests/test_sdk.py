@@ -674,3 +674,40 @@ def test_save_image_outputs_returns_empty_for_text_only_cells(tmp_path):
 
     saved = nb.status(full=True).cell(cell.id).save_image_outputs(tmp_path / "none")
     assert saved == []
+
+
+def test_save_image_outputs_wraps_malformed_base64_in_hypernote_error(tmp_path):
+    state, transport = _make_transport()
+    path = "tmp/sdk-save-bad-b64.ipynb"
+    nb = hypernote.connect(path, create=True, server="http://test", transport=transport)
+    cell = nb.cells.insert_code("plot()", id="bad-cell")
+    stored_cell = state["notebooks"][path]["cells"][0]
+    stored_cell["outputs"] = [
+        {
+            "output_type": "display_data",
+            "data": {"image/png": "not%valid%base64"},
+            "metadata": {},
+        }
+    ]
+
+    status = nb.status(full=True)
+    with pytest.raises(HypernoteError, match="Could not decode image/png"):
+        status.cell(cell.id).save_image_outputs(tmp_path / "bad")
+
+
+def test_save_image_outputs_writes_svg_as_utf8(tmp_path):
+    state, transport = _make_transport()
+    path = "tmp/sdk-save-svg-utf8.ipynb"
+    nb = hypernote.connect(path, create=True, server="http://test", transport=transport)
+    cell = nb.cells.insert_code("plot()", id="svg-cell")
+    svg = '<svg xmlns="http://www.w3.org/2000/svg"><text>café — 数据</text></svg>'
+    stored_cell = state["notebooks"][path]["cells"][0]
+    stored_cell["outputs"] = [
+        {"output_type": "display_data", "data": {"image/svg+xml": svg}, "metadata": {}}
+    ]
+
+    saved = nb.status(full=True).cell(cell.id).save_image_outputs(tmp_path / "svg")
+
+    assert saved == [str(tmp_path / "svg" / "svg-cell-out0.svg")]
+    # Round-trips via UTF-8 regardless of the platform's locale encoding.
+    assert (tmp_path / "svg" / "svg-cell-out0.svg").read_text(encoding="utf-8") == svg
