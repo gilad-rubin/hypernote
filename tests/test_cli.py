@@ -899,7 +899,7 @@ def test_batch_ix_reports_partial_state_after_failure(runner, fake_notebooks, mo
 
     # A halted batch reports failure both in the JSON summary and via a nonzero
     # exit code, so scripts can branch without parsing the payload.
-    assert result.exit_code != 0
+    assert result.exit_code == 1
     payload = json.loads(result.output.strip().splitlines()[-1])
     assert payload["status"] == "error"
     assert payload["halt_reason"] == "job_failed"
@@ -953,7 +953,7 @@ def test_batch_ix_brief_reports_partial_state_after_failure(
         ],
     )
 
-    assert result.exit_code != 0
+    assert result.exit_code == 1
     payload = json.loads(result.output)
     assert payload["status"] == "error"
     assert payload["halt_reason"] == "job_failed"
@@ -975,7 +975,7 @@ def test_run_all_exits_nonzero_when_job_fails(runner, fake_notebooks, monkeypatc
     result = runner.invoke(cli, ["run-all", "demo.ipynb", "--json"])
 
     # Failure surfaces in both the JSON payload and the exit code.
-    assert result.exit_code != 0
+    assert result.exit_code == 1
     payload = json.loads(result.output.strip().splitlines()[-1])
     assert payload["job"]["status"] == "failed"
 
@@ -1000,7 +1000,7 @@ def test_restart_run_all_exits_nonzero_when_job_fails(runner, fake_notebooks, mo
 
     result = runner.invoke(cli, ["restart-run-all", "demo.ipynb", "--json"])
 
-    assert result.exit_code != 0
+    assert result.exit_code == 1
     assert nb.restarted is True
     payload = json.loads(result.output.strip().splitlines()[-1])
     assert payload["job"]["status"] == "failed"
@@ -1014,7 +1014,7 @@ def test_exec_exits_nonzero_when_job_fails(runner, fake_notebooks, monkeypatch):
 
     result = runner.invoke(cli, ["exec", "demo.ipynb", "code-1", "--brief"])
 
-    assert result.exit_code != 0
+    assert result.exit_code == 1
     payload = json.loads(result.output)
     assert payload["status"] == "failed"
 
@@ -1026,7 +1026,7 @@ def test_single_ix_exits_nonzero_when_job_fails(runner, fake_notebooks, monkeypa
 
     result = runner.invoke(cli, ["ix", "demo.ipynb", "-s", "raise RuntimeError('boom')", "--brief"])
 
-    assert result.exit_code != 0
+    assert result.exit_code == 1
     payload = json.loads(result.output)
     assert payload["status"] == "failed"
 
@@ -1164,7 +1164,7 @@ def test_ix_failure_returns_repair_hints(runner, fake_notebooks, monkeypatch):
 
     # Nonzero exit on failure, but the JSON payload and repair hints are still
     # emitted first so callers retain the recovery guidance.
-    assert result.exit_code != 0
+    assert result.exit_code == 1
     payload = json.loads(result.output.strip().splitlines()[-1])
     assert payload["job"]["status"] == "failed"
     assert any("edit replace demo.ipynb cell-1" in hint for hint in payload["hints"])
@@ -1527,7 +1527,7 @@ def test_job_await_exits_nonzero_when_job_fails(runner, fake_notebooks, monkeypa
 
     result = runner.invoke(cli, ["job", "await", "job-1"])
 
-    assert result.exit_code != 0
+    assert result.exit_code == 1
     payload = json.loads(result.output.strip().splitlines()[-1])
     assert payload["job"]["status"] == "failed"
 
