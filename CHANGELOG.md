@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.5.0 - 2026-06-14
+
+Agents can now see rich cell outputs, not just text previews: raw MIME bundles
+and decoded images are first-class. Execution commands also became
+script-friendly — a failed run now exits nonzero instead of hiding the failure
+in JSON — and `restart` works on a notebook whose kernel was never opened.
+
 ### Added
 
 - Rich (non-text) cell outputs are now inspectable by agents. The SDK gains
@@ -17,6 +24,21 @@ All notable changes to this project will be documented in this file.
   paths, so agents can read rendered plots directly.
 - `cat` appends a contextual `--save-images` hint when listed cells contain
   image outputs.
+
+### Changed
+
+- Execution commands (`run-all`, `restart-run-all`, `exec`, `ix`, and
+  `job await`) now exit `1` when a job ends `failed` or `interrupted`, instead
+  of always exiting `0` with pass/fail only in the JSON `job.status`. The JSON
+  result is still emitted first; `awaiting_input` and `--no-wait` stay `0`.
+  Scripts that relied on these commands always exiting `0` must now check the
+  exit code (or read `job get` after `--no-wait`).
+
+### Fixed
+
+- `restart` and `restart-run-all` no longer fail with "Resource not found" on a
+  notebook whose runtime was never opened. Stopping a non-existent runtime is
+  now treated as an idempotent no-op so a fresh kernel is brought up.
 
 ## 0.4.1 - 2026-05-25
 
