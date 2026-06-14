@@ -938,6 +938,11 @@ class Runtime:
             hypernote=True,
             json_body={},
         )
+        # 404 means the server has no runtime room for this notebook, i.e. there
+        # is nothing to stop. Treat stop as idempotent so callers like restart()
+        # work against a notebook whose kernel was never opened.
+        if response.status_code == 404:
+            return self
         if response.status_code == 400:
             raise RuntimeUnavailableError(response.text or "Runtime unavailable")
         _raise_response(response)

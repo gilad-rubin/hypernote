@@ -78,6 +78,26 @@ Job and runtime commands are for the live notebook session. They should be treat
 - supported notebook commands expose `--brief` for low-noise agent JSON:
   `create`, `ix`, `exec`, `status`, `cat`, and `edit replace`
 
+## Exit codes
+
+Commands that wait on a job (`run-all`, `restart-run-all`, `exec`, `ix`, and
+`job await`) exit nonzero when the run does not succeed, so scripts can branch
+on `$?` without parsing JSON:
+
+- `0` — the job(s) succeeded, or ended `awaiting_input` (a recoverable pause).
+- `1` — the job ended `failed` or `interrupted`. The JSON result (including a
+  batch `ix` partial-state summary with `halt_reason`) is still written to
+  stdout first; only the process exit code reflects the failure.
+
+This includes the `exec --no-wait` then `job await` pattern: `exec --no-wait`
+returns before the outcome is known so it always exits `0`, and the later
+`job await` is where the failure surfaces in the exit code. (`run-all` and
+`restart-run-all` have no `--no-wait`.) `job get` only reads the current status
+and never exits nonzero for a failed job. Non-execution commands (`status`,
+`cat`, `diff`, `edit`, etc.) exit nonzero only on their own errors (bad
+arguments, missing notebook, server failure), never because a previously-run
+cell has error output.
+
 ## Brief Mode
 
 Use `--brief` when an agent needs the result of the command without extra

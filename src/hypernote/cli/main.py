@@ -1511,6 +1511,24 @@ def cat_cmd(
     _render_result(payload, mode=mode, human_renderer=lambda: _human_cat(payload))
 
 
+# A run did not succeed when its job halted in one of these terminal states.
+# Matches the multi-cell `status: "error"` definition: AWAITING_INPUT is a
+# recoverable pause handled interactively, not a failure, so it stays exit 0.
+FAILED_JOB_STATUSES = {JobStatus.FAILED, JobStatus.INTERRUPTED}
+
+
+def _exit_if_job_failed(job: Job | None) -> None:
+    """Exit nonzero when an execution job ended in a failed terminal state.
+
+    The command's output is already emitted by the caller; this only sets the
+    process exit code so scripts can branch on success without parsing JSON. A
+    ``None`` or still-running job (e.g. ``--no-wait``) leaves the exit code at 0
+    because the outcome is not yet known.
+    """
+    if job is not None and job.status in FAILED_JOB_STATUSES:
+        raise click.exceptions.Exit(1)
+
+
 def _run_command_output(
     *,
     notebook: Notebook,
@@ -1526,6 +1544,7 @@ def _run_command_output(
     progress: str | None,
     timeout: float | None = None,
     brief: bool = False,
+    exit_on_failure: bool = True,
 ) -> None:
     _validate_brief_run_flags(
         brief=brief,
@@ -1555,6 +1574,8 @@ def _run_command_output(
         elif hints:
             for hint in hints:
                 click.echo(f"hint: {hint}")
+        if exit_on_failure:
+            _exit_if_job_failed(watched_job)
         return
 
     if job.status not in TERMINAL_STATUSES and timeout is not None:
@@ -1573,6 +1594,8 @@ def _run_command_output(
             ),
             pretty=pretty,
         )
+        if exit_on_failure:
+            _exit_if_job_failed(job)
         return
 
     payload = _job_result(command, path, job, inserted_cells=inserted_cells)
@@ -1585,6 +1608,8 @@ def _run_command_output(
                 payload.get("hints"),
             )
         )
+    if exit_on_failure:
+        _exit_if_job_failed(job)
 
 
 @cli.command("ix")
@@ -1685,6 +1710,9 @@ def ix_cmd(
                     progress=progress,
                     timeout=timeout,
                     brief=brief if len(cells) == 1 else False,
+                    # Multi-cell ix reports failure in its aggregate summary and
+                    # exits there; only single-cell ix exits per job here.
+                    exit_on_failure=len(cells) == 1,
                 )
             if job.status in {JobStatus.FAILED, JobStatus.INTERRUPTED, JobStatus.AWAITING_INPUT}:
                 halted_early = index < len(cells) - 1
@@ -1717,6 +1745,7 @@ def ix_cmd(
             payload["last_processed_cell_id"] = inserted_cells[-1].id
             payload["cells_remaining"] = len(cells) - len(inserted_cells)
         _echo_json(payload, pretty=pretty or _stdout_is_tty())
+        _exit_if_job_failed(final_job)
         return
 
     if final_job is None:
