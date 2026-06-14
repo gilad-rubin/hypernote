@@ -12,6 +12,7 @@ import time
 import urllib.parse
 from dataclasses import asdict, dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 import httpx
@@ -29,6 +30,11 @@ SUMMARY_SOURCE_CHARS = 120
 SUMMARY_OUTPUT_TEXT_CHARS = 80
 DEFAULT_READ_OUTPUT_CHARS = 400
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+IMAGE_MIME_EXTENSIONS = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/svg+xml": "svg",
+}
 
 
 class CellType(str, Enum):
@@ -220,6 +226,86 @@ class CellStatus:
                 payload["tail_output_total_chars"] = tail_preview["total_chars"]
         return payload
 
+    def output_mime_bundles(
+        self,
+        *,
+        max_content_chars: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Raw MIME bundle view of this cell's outputs.
+
+        This is the explicit "give me everything" escape hatch behind the
+        summary-first preview helpers. Each entry is shaped as
+        ``{"output_type", "data", "metadata"}`` with notebook MIME payloads
+        (including base64 images) returned intact. ``max_content_chars``
+        truncates string payloads for transport-friendly reads; truncated
+        entries gain ``data_truncated`` with the original character counts.
+
+        Requires raw outputs, so build the status with ``nb.status(full=True)``
+        or ``CellStatus.from_handle(cell)``.
+        """
+        outputs = list(self.outputs or ())
+        _require_raw_outputs(outputs)
+        return [
+            _output_mime_bundle(output, max_content_chars=max_content_chars)
+            for output in outputs
+        ]
+
+    def mime_bundle_payload(
+        self,
+        *,
+        max_content_chars: int | None = None,
+    ) -> dict[str, Any]:
+        """Focused MIME-bundle payload for one cell, mirroring output_payload."""
+        bundles = self.output_mime_bundles(max_content_chars=max_content_chars)
+        return {
+            "cell_id": self.id,
+            "output_count": len(bundles),
+            "mime_bundles": bundles,
+        }
+
+    def save_image_outputs(self, directory: str | Path) -> list[str]:
+        """Write this cell's image outputs (png, jpeg, svg) into a directory.
+
+        Base64 payloads are decoded to real image bytes; SVG payloads are
+        written as text. Returns the written file paths so callers can open
+        the rendered outputs directly.
+        """
+        outputs = list(self.outputs or ())
+        _require_raw_outputs(outputs)
+        target = Path(directory)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise HypernoteError(f"Could not create image directory {target}: {exc}") from exc
+        saved: list[str] = []
+        for index, output in enumerate(outputs):
+            data = output.get("data")
+            if not isinstance(data, dict):
+                continue
+            for mime_type, extension in IMAGE_MIME_EXTENSIONS.items():
+                if mime_type not in data:
+                    continue
+                content = _joined_data_content(data[mime_type])
+                if not isinstance(content, str) or not content.strip():
+                    continue
+                path = target / f"{_safe_file_stem(self.id)}-out{index}.{extension}"
+                try:
+                    if mime_type == "image/svg+xml":
+                        # nbformat stores SVG as UTF-8 text; pin the encoding so
+                        # non-ASCII labels survive on non-UTF-8 locales.
+                        path.write_text(content, encoding="utf-8")
+                    else:
+                        # ValueError covers binascii.Error from malformed base64.
+                        path.write_bytes(base64.b64decode("".join(content.split())))
+                except ValueError as exc:
+                    raise HypernoteError(
+                        f"Could not decode {mime_type} output for cell {self.id!r}: {exc}"
+                    ) from exc
+                except OSError as exc:
+                    raise HypernoteError(f"Could not write image output to {path}: {exc}") from exc
+                saved.append(str(path))
+        return saved
+
 
 @dataclass(frozen=True)
 class NotebookStatus:
@@ -307,6 +393,13 @@ class NotebookStatus:
             if cell.id == cell_id:
                 return cell
         raise CellNotFoundError(cell_id)
+
+    def save_image_outputs(self, directory: str | Path) -> list[str]:
+        """Write image outputs from every cell into a directory; see CellStatus."""
+        saved: list[str] = []
+        for cell in self.cells:
+            saved.extend(cell.save_image_outputs(directory))
+        return saved
 
 
 @dataclass(frozen=True)
@@ -1260,6 +1353,104 @@ def _summarize_output(
 
 def _has_error_output(outputs: Iterable[dict[str, Any]]) -> bool:
     return any(output.get("output_type") == "error" for output in outputs)
+
+
+def _is_summarized_output(output: dict[str, Any]) -> bool:
+    """True when an output came from _summarize_output rather than raw nbformat.
+
+    The summary-first status (`nb.status()` without ``full=True``) replaces every
+    output with a truncated preview. Those previews carry tell-tale fields that
+    raw nbformat outputs never have, and they drop the raw fields each output
+    type must have (a ``data`` dict for display outputs, a ``traceback`` list for
+    errors). We refuse to export them as MIME bundles so a clipped preview is
+    never handed back as if it were intact data.
+    """
+    output_type = output.get("output_type")
+    # Rich display outputs lose their `data` dict (replaced by `data_keys`).
+    if "data_keys" in output:
+        return True
+    # Any clipped preview (stream/error/display) carries truncation markers.
+    if output.get("truncated") is True or "total_chars" in output:
+        return True
+    # Display outputs must carry a raw `data` dict; summaries do not.
+    if output_type in {"display_data", "execute_result", "update_display_data"} and not isinstance(
+        output.get("data"), dict
+    ):
+        return True
+    # Errors must carry the raw `traceback` list; summaries drop it for a preview.
+    if output_type == "error" and "traceback" not in output:
+        return True
+    return False
+
+
+def _require_raw_outputs(outputs: Iterable[dict[str, Any]]) -> None:
+    for output in outputs:
+        if _is_summarized_output(output):
+            raise HypernoteError(
+                "Cell outputs are summarized, so raw MIME data is unavailable. "
+                "Build the status with nb.status(full=True) or "
+                "CellStatus.from_handle(cell) before reading MIME bundles."
+            )
+
+
+def _joined_data_content(value: Any) -> Any:
+    if isinstance(value, list) and all(isinstance(part, str) for part in value):
+        return "".join(value)
+    return value
+
+
+def _safe_file_stem(value: str) -> str:
+    stem = re.sub(r"[^A-Za-z0-9._-]", "-", value)
+    if stem == value:
+        return stem or "cell"
+    # Sanitizing is lossy (e.g. "cell/1" and "cell:1" both -> "cell-1"), so append
+    # a stable hash of the original id to keep distinct cells from colliding.
+    digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:8]
+    base = stem.strip("-") or "cell"
+    return f"{base}-{digest}"
+
+
+def _output_mime_bundle(
+    output: dict[str, Any],
+    *,
+    max_content_chars: int | None = None,
+) -> dict[str, Any]:
+    output_type = output.get("output_type", "unknown")
+    metadata = dict(output.get("metadata") or {})
+    data: dict[str, Any] = {}
+    if output_type == "stream":
+        data["text/plain"] = _joined_data_content(output.get("text", ""))
+        if output.get("name") is not None:
+            metadata["stream_name"] = output.get("name")
+    elif output_type == "error":
+        data["text/plain"] = _output_text(output)
+        metadata["ename"] = output.get("ename")
+        metadata["evalue"] = output.get("evalue")
+    else:
+        raw_data = output.get("data")
+        if isinstance(raw_data, dict):
+            data = {
+                mime_type: _joined_data_content(content)
+                for mime_type, content in raw_data.items()
+            }
+    bundle: dict[str, Any] = {
+        "output_type": output_type,
+        "data": data,
+        "metadata": metadata,
+    }
+    if max_content_chars is not None and max_content_chars > 0:
+        truncated: dict[str, int] = {}
+        for mime_type, content in data.items():
+            if isinstance(content, str) and len(content) > max_content_chars:
+                truncated[mime_type] = len(content)
+                data[mime_type] = content[:max_content_chars]
+        if truncated:
+            bundle["data_truncated"] = truncated
+            bundle["hint"] = (
+                "data truncated; use --full-output or "
+                "output_mime_bundles() without max_content_chars for intact payloads"
+            )
+    return bundle
 
 
 def _cell_output_preview(

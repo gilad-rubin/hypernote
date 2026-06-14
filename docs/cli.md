@@ -46,6 +46,8 @@ Commands often append contextual hints. In human mode they appear as `hint:` lin
 - `cat PATH`
   - compact cell inventory and focused reads
   - use `--cell CELL_ID`, `--output CELL_ID`, `--tail-output CELL_ID`, `--no-outputs`, `--full`, `--max-output N`, and `--full-output`
+  - use `--mime CELL_ID` for raw output MIME bundles (base64 payloads truncated at `--max-output` unless `--full-output`)
+  - use `--save-images DIR` to write image outputs (png, jpeg, svg) to files and report the saved paths; combine with `--cell`, `--output`, or `--mime` to save one cell, or use alone to save every cell's images
 
 ## Secondary commands
 
@@ -107,6 +109,8 @@ batch chatter. Use the normal command shape, `--full-output`, or
 `cat --output CELL_ID --brief --full-output` when the preview is too small.
 Focused `cat --output CELL_ID --brief` preserves output line breaks in the JSON
 `text` field. Brief `ix`/`exec` output previews are compact one-line summaries.
+Focused `cat --mime CELL_ID --brief` and `cat ... --save-images DIR --brief`
+keep `mime_bundles` and `saved_images` while dropping the summary and hints.
 
 ## Read Patterns
 
@@ -117,6 +121,10 @@ Focused `cat --output CELL_ID --brief` preserves output line breaks in the JSON
 - use `--output` or `--tail-output` when you only need the latest output text from one cell
 - for substantial cell results, use `cat --output CELL_ID --brief --full-output`
   so you see the full result without reading the whole notebook
+- when an output's `data_keys` mention `image/png`, `image/jpeg`, or
+  `image/svg+xml`, use `cat --output CELL_ID --save-images DIR` and read the
+  saved files to literally see the plot, or `cat --mime CELL_ID` for the raw
+  MIME bundle JSON
 - compact JSON reads may include snapshot tokens and recovery hints for follow-up commands unless `--brief` is used
 
 ## Command intent
@@ -204,6 +212,28 @@ Use the returned cell id for focused monitoring:
 ```bash
 uv run hypernote cat "$notebook_path" --tail-output CELL_ID --brief
 ```
+
+## Rich output inspection
+
+Plots, HTML, and images live in the notebook as MIME bundles. Text previews
+summarize them as `data_keys`; the focused flags make them inspectable:
+
+```bash
+cat <<'EOF' | uv run hypernote ix "$notebook_path" --brief
+import matplotlib.pyplot as plt
+plt.plot([1, 2, 3])
+plt.show()
+EOF
+uv run hypernote cat "$notebook_path" --output CELL_ID --save-images tmp/plots --brief
+# Read the reported tmp/plots/CELL_ID-out0.png to see the rendered plot.
+uv run hypernote cat "$notebook_path" --mime CELL_ID --brief
+```
+
+`--mime` truncates long payloads such as base64 images at `--max-output`
+characters and records the original sizes under `data_truncated`; add
+`--full-output` for intact payloads. `--save-images` decodes `image/png` and
+`image/jpeg` to real image bytes and writes `image/svg+xml` as text, then
+reports the file paths under `saved_images`.
 
 ## Batch execution notes
 

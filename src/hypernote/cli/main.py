@@ -37,6 +37,7 @@ from hypernote import (
 )
 from hypernote.sdk import (
     DEFAULT_READ_OUTPUT_CHARS,
+    IMAGE_MIME_EXTENSIONS,
     _Config,
     _control_plane,
     _job_timeout_message,
@@ -298,6 +299,26 @@ def _cat_output_payload(
     }
 
 
+def _cat_mime_payload(
+    status: NotebookStatus,
+    *,
+    path: str,
+    cell_id: str,
+    max_output_chars: int,
+    full_output: bool,
+) -> dict[str, Any]:
+    return {
+        "command": "cat",
+        "path": path,
+        "summary": status.aggregates()["summary"],
+        "cell_id": cell_id,
+        "selected_cell_id": cell_id,
+        **status.cell(cell_id).mime_bundle_payload(
+            max_content_chars=None if full_output else max_output_chars,
+        ),
+    }
+
+
 def _cell_brief_payload(cell: CellHandle, *, outputs_current: bool = True) -> dict[str, Any]:
     compact = CellStatus.from_handle(
         cell,
@@ -398,10 +419,29 @@ def _build_cat_payload(
     cell_id: str | None,
     output_cell_id: str | None,
     tail_output_cell_id: str | None,
+    mime_cell_id: str | None = None,
+    save_images_dir: str | None = None,
 ) -> dict[str, Any]:
     status = notebook.status(full=True)
-    if output_cell_id:
-        return _cat_output_payload(
+    saved_images: list[str] | None = None
+    if save_images_dir is not None:
+        focused_cell_id = mime_cell_id or output_cell_id or tail_output_cell_id or cell_id
+        if focused_cell_id:
+            saved_images = status.cell(focused_cell_id).save_image_outputs(save_images_dir)
+        else:
+            saved_images = status.save_image_outputs(save_images_dir)
+
+    payload: dict[str, Any] | None = None
+    if mime_cell_id:
+        payload = _cat_mime_payload(
+            status,
+            path=notebook.path,
+            cell_id=mime_cell_id,
+            max_output_chars=max_output_chars,
+            full_output=full_output,
+        )
+    elif output_cell_id:
+        payload = _cat_output_payload(
             status,
             path=notebook.path,
             cell_id=output_cell_id,
@@ -409,8 +449,8 @@ def _build_cat_payload(
             max_output_chars=max_output_chars,
             full_output=full_output,
         )
-    if tail_output_cell_id:
-        return _cat_output_payload(
+    elif tail_output_cell_id:
+        payload = _cat_output_payload(
             status,
             path=notebook.path,
             cell_id=tail_output_cell_id,
@@ -418,6 +458,10 @@ def _build_cat_payload(
             max_output_chars=max_output_chars,
             full_output=full_output,
         )
+    if payload is not None:
+        if saved_images is not None:
+            payload["saved_images"] = saved_images
+        return payload
 
     if cell_id:
         cells = [
@@ -438,7 +482,7 @@ def _build_cat_payload(
 
     failed_cells = sum(1 for entry in cells if entry.get("has_error_output"))
     cells_with_outputs = sum(1 for entry in cells if entry.get("output_count", 0) > 0)
-    return {
+    payload = {
         "command": "cat",
         "path": notebook.path,
         "summary": status.aggregates()["summary"],
@@ -449,6 +493,9 @@ def _build_cat_payload(
         "selected_cell_id": cell_id,
         "cells": cells,
     }
+    if saved_images is not None:
+        payload["saved_images"] = saved_images
+    return payload
 
 
 def _hinted_result(data: dict[str, Any], *hints: str | None) -> dict[str, Any]:
@@ -625,6 +672,29 @@ def _human_diff(status: NotebookStatus, *, full: bool = False) -> str:
 
 
 def _human_cat(data: dict[str, Any]) -> str:
+    if "mime_bundles" in data and "cells" not in data:
+        lines = [
+            (
+                f"{Path(data.get('path', 'notebook')).name} · "
+                f"{data.get('selected_cell_id', data.get('cell_id'))} · "
+                f"{data.get('output_count', 0)} outputs"
+            )
+        ]
+        for bundle in data.get("mime_bundles", []):
+            parts = []
+            for mime_type, content in (bundle.get("data") or {}).items():
+                total = bundle.get("data_truncated", {}).get(
+                    mime_type,
+                    len(content) if isinstance(content, str) else None,
+                )
+                parts.append(f"{mime_type} ({total} chars)" if total is not None else mime_type)
+            lines.append(f"- {bundle.get('output_type', 'unknown')}: {', '.join(parts) or 'empty'}")
+            if bundle.get("hint"):
+                lines.append(f"  {bundle['hint']}")
+        for saved in data.get("saved_images", []):
+            lines.append(f"saved: {saved}")
+        return _with_hints_text("\n".join(lines), data.get("hints"))
+
     if "outputs" in data and "cells" not in data:
         lines = [
             (
@@ -639,6 +709,8 @@ def _human_cat(data: dict[str, Any]) -> str:
             text = output.get("text")
             if text:
                 lines.append(f"- {output.get('output_type', 'unknown')}: {text}")
+        for saved in data.get("saved_images", []):
+            lines.append(f"saved: {saved}")
         return _with_hints_text("\n".join(lines), data.get("hints"))
 
     cells = data.get("cells", [])
@@ -677,6 +749,8 @@ def _human_cat(data: dict[str, Any]) -> str:
                 lines.append(f"  output[{output.get('output_type', 'unknown')}]: {text}")
             if output.get("hint"):
                 lines.append(f"  {output['hint']}")
+    for saved in data.get("saved_images", []):
+        lines.append(f"saved: {saved}")
     return _with_hints_text("\n".join(lines), data.get("hints"))
 
 
@@ -763,13 +837,29 @@ def _status_hints(path: str, *, snapshot: str | None = None) -> list[str]:
     return _dedupe_hints(hints)
 
 
-def _cat_hints(path: str) -> list[str]:
-    return _dedupe_hints(
-        [
-            _job_hint(f"hypernote status {shlex.quote(path)}"),
-            _job_hint(f"hypernote ix {shlex.quote(path)} -s 'print(42)'"),
-        ]
-    )
+def _cat_hints(path: str, *, image_cell_id: str | None = None) -> list[str]:
+    hints = [
+        _job_hint(f"hypernote status {shlex.quote(path)}"),
+        _job_hint(f"hypernote ix {shlex.quote(path)} -s 'print(42)'"),
+    ]
+    if image_cell_id:
+        hints.insert(
+            0,
+            _job_hint(
+                f"hypernote cat {shlex.quote(path)} --output {shlex.quote(image_cell_id)} "
+                "--save-images tmp/hypernote-images"
+            ),
+        )
+    return _dedupe_hints(hints)
+
+
+def _image_output_cell_id(cells: list[dict[str, Any]]) -> str | None:
+    for cell in cells:
+        for output in cell.get("outputs") or []:
+            data_keys = output.get("data_keys") or []
+            if any(key in IMAGE_MIME_EXTENSIONS for key in data_keys):
+                return cell["id"]
+    return None
 
 
 def _human_status_payload(payload: dict[str, Any]) -> str:
@@ -1453,6 +1543,16 @@ def diff_cmd(
     "tail_output_cell_id",
     help="Only show the last output preview for a single cell id",
 )
+@click.option(
+    "--mime",
+    "mime_cell_id",
+    help="Only show raw output MIME bundles for a single cell id",
+)
+@click.option(
+    "--save-images",
+    "save_images_dir",
+    help="Write image outputs (png, jpeg, svg) to this directory and report saved paths",
+)
 @click.option("--full", is_flag=True, help="Include full cell source and outputs")
 @click.option("--no-outputs", is_flag=True, help="Hide outputs")
 @click.option(
@@ -1475,6 +1575,8 @@ def cat_cmd(
     cell_id: str | None,
     output_cell_id: str | None,
     tail_output_cell_id: str | None,
+    mime_cell_id: str | None,
+    save_images_dir: str | None,
     full: bool,
     no_outputs: bool,
     max_output: int,
@@ -1485,28 +1587,37 @@ def cat_cmd(
     brief: bool,
 ) -> None:
     selected_modes = sum(
-        bool(value) for value in (cell_id, output_cell_id, tail_output_cell_id)
+        bool(value) for value in (cell_id, output_cell_id, tail_output_cell_id, mime_cell_id)
     )
     if selected_modes > 1:
-        raise click.ClickException("Choose only one of --cell, --output, or --tail-output")
+        raise click.ClickException(
+            "Choose only one of --cell, --output, --tail-output, or --mime"
+        )
     notebook = _sdk_notebook(ctx, path)
     payload = _build_cat_payload(
         notebook,
         include_outputs=not no_outputs,
         full_source=full,
+        # `--full` controls source; output fullness is governed uniformly by
+        # `--full-output` across --output/--tail-output/--mime (no special case).
         full_output=full_output,
         max_output_chars=max_output,
         cell_id=cell_id,
         output_cell_id=output_cell_id,
         tail_output_cell_id=tail_output_cell_id,
+        mime_cell_id=mime_cell_id,
+        save_images_dir=save_images_dir,
     )
     if brief:
-        if output_cell_id or tail_output_cell_id:
+        if output_cell_id or tail_output_cell_id or mime_cell_id:
             payload.pop("summary", None)
         payload.pop("hints", None)
         _echo_json(payload, pretty=pretty)
         return
-    payload = _append_hints(payload, _cat_hints(notebook.path))
+    image_cell_id = None
+    if save_images_dir is None and not mime_cell_id:
+        image_cell_id = _image_output_cell_id(payload.get("cells", []))
+    payload = _append_hints(payload, _cat_hints(notebook.path, image_cell_id=image_cell_id))
     mode = "pretty" if pretty else _final_output_mode(json_flag=json_flag, human_flag=human_flag)
     _render_result(payload, mode=mode, human_renderer=lambda: _human_cat(payload))
 

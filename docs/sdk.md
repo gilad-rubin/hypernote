@@ -139,10 +139,43 @@ consumers can share the same summary/truncation rules instead of re-encoding the
   - compact source/output view for one cell
 - `cell.output_payload(max_chars=400, full_output=False, tail=False)`
   - focused output-only view for one cell, with optional tail preview
+- `cell.output_mime_bundles(max_content_chars=None)`
+  - raw MIME bundle view of one cell's outputs; the explicit "give me everything" escape hatch
+- `cell.mime_bundle_payload(max_content_chars=None)`
+  - focused MIME-bundle payload for one cell, mirroring `output_payload`
+- `cell.save_image_outputs(directory)`
+  - decode and write one cell's image outputs to files, returning the saved paths
+- `status.save_image_outputs(directory)`
+  - write image outputs from every cell into one directory
 
 These helpers are intended for agent-oriented observation and tooling layers. They preserve
 the notebook-first object model while centralizing truncation, error detection, and focused-read
 rules in the SDK.
+
+### Rich output access
+
+Text previews stay summary-first, so plots, HTML, and images stored in the
+notebook are exposed through two explicit escape hatches:
+
+- `cell.output_mime_bundles()` returns each output as
+  `{"output_type", "data", "metadata"}` with the notebook MIME payloads —
+  including base64 images — intact. Stream and error outputs are normalized
+  into `text/plain` entries with `stream_name` / `ename` / `evalue` metadata.
+  Pass `max_content_chars=N` for transport-friendly reads; truncated entries
+  gain a `data_truncated` map of original character counts.
+- `cell.save_image_outputs(directory)` decodes `image/png` and `image/jpeg`
+  base64 payloads to real image bytes, writes `image/svg+xml` as text, and
+  returns the written paths so an agent can open the rendered plot directly.
+
+Both require raw outputs: build the status with `nb.status(full=True)` or
+`CellStatus.from_handle(cell)`. Statuses built with `full=False` hold
+summarized outputs and raise `HypernoteError` from these helpers.
+
+```python
+status = nb.status(full=True)
+paths = status.cell(cell.id).save_image_outputs("tmp/plots")
+bundles = status.cell(cell.id).output_mime_bundles()
+```
 
 ## Public errors
 

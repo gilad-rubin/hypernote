@@ -169,6 +169,21 @@ command hints, snapshot tokens, raw output payloads, or per-cell batch chatter.
   `edit replace` changes source without running it; old outputs may remain until
   the following `exec`. For multi-line replacements, pipe the fixed source
   through stdin instead of using `-s`.
+- **Plot and rich output inspection:** run the plotting cell with `ix`, save
+  the rendered images to files, then read the saved files to literally see the
+  result:
+  ```bash
+  cat <<'EOF' | uv run hypernote ix nb.ipynb --brief
+  import matplotlib.pyplot as plt
+  plt.plot([1, 2, 3])
+  plt.show()
+  EOF
+  uv run hypernote cat nb.ipynb --output CELL_ID --save-images tmp/plots --brief
+  ```
+  The result lists the written files under `saved_images`; open them with your
+  file reader. Output previews summarize rich outputs as `data_keys` such as
+  `image/png`; use `cat nb.ipynb --mime CELL_ID --brief` when you need the raw
+  MIME bundle JSON instead of files (add `--full-output` for intact base64).
 - **Known-good batch:** use `ix --cells-file` only when intermediate inspection
   is unnecessary. Batch output may contain one compact result for each executed
   code cell plus a final aggregate; markdown cells are represented in the final
@@ -284,7 +299,7 @@ know exactly where to resume. Cells after the halt point were never inserted int
 7. Start with `hypernote` itself when you need workspace context and the next best action.
 8. Use `--stream-json` only when you plan to watch the process; otherwise it wastes context.
 9. Start the server with `hypernote setup serve` instead of hand-writing Jupyter flags.
-10. Skip large rich outputs such as `graph.visualize()` in agent automation unless the visualization is the point of the run.
+10. Skip large rich outputs such as `graph.visualize()` in agent automation unless the visualization is the point of the run. When it is the point, use `cat --save-images DIR` and read the saved image files instead of pulling base64 into context.
 11. Use unique notebook paths in smoke tests and demos.
 12. Move durable notes into `docs/` or `dev/`; keep `tmp/` disposable.
 13. Treat Hypernote jobs, runtime state, and cell attribution as ephemeral coordination state, not durable history.
