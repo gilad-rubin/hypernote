@@ -897,7 +897,9 @@ def test_batch_ix_reports_partial_state_after_failure(runner, fake_notebooks, mo
         ],
     )
 
-    assert result.exit_code == 0
+    # A halted batch reports failure both in the JSON summary and via a nonzero
+    # exit code, so scripts can branch without parsing the payload.
+    assert result.exit_code != 0
     payload = json.loads(result.output.strip().splitlines()[-1])
     assert payload["status"] == "error"
     assert payload["halt_reason"] == "job_failed"
@@ -951,7 +953,7 @@ def test_batch_ix_brief_reports_partial_state_after_failure(
         ],
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code != 0
     payload = json.loads(result.output)
     assert payload["status"] == "error"
     assert payload["halt_reason"] == "job_failed"
@@ -962,6 +964,84 @@ def test_batch_ix_brief_reports_partial_state_after_failure(
     assert [entry["id"] for entry in payload["results"]] == ["intro-md", "setup-cell"]
     assert payload["results"][1]["has_error_output"] is True
     assert "hints" not in payload
+
+
+def test_run_all_exits_nonzero_when_job_fails(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    nb.cells.insert_code("raise RuntimeError('boom')", id="code-1")
+    nb.next_job_transitions.append([{"status": JobStatus.FAILED}])
+
+    result = runner.invoke(cli, ["run-all", "demo.ipynb", "--json"])
+
+    # Failure surfaces in both the JSON payload and the exit code.
+    assert result.exit_code != 0
+    payload = json.loads(result.output.strip().splitlines()[-1])
+    assert payload["job"]["status"] == "failed"
+
+
+def test_run_all_exits_zero_when_job_succeeds(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    nb.cells.insert_code("print(42)", id="code-1")
+
+    result = runner.invoke(cli, ["run-all", "demo.ipynb", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output.strip().splitlines()[-1])
+    assert payload["job"]["status"] == "succeeded"
+
+
+def test_restart_run_all_exits_nonzero_when_job_fails(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    nb.cells.insert_code("raise RuntimeError('boom')", id="code-1")
+    nb.next_job_transitions.append([{"status": JobStatus.FAILED}])
+
+    result = runner.invoke(cli, ["restart-run-all", "demo.ipynb", "--json"])
+
+    assert result.exit_code != 0
+    assert nb.restarted is True
+    payload = json.loads(result.output.strip().splitlines()[-1])
+    assert payload["job"]["status"] == "failed"
+
+
+def test_exec_exits_nonzero_when_job_fails(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    nb.cells.insert_code("raise RuntimeError('boom')", id="code-1")
+    nb.next_job_transitions.append([{"status": JobStatus.FAILED}])
+
+    result = runner.invoke(cli, ["exec", "demo.ipynb", "code-1", "--brief"])
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["status"] == "failed"
+
+
+def test_single_ix_exits_nonzero_when_job_fails(runner, fake_notebooks, monkeypatch):
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    nb.next_job_transitions.append([{"status": JobStatus.FAILED}])
+
+    result = runner.invoke(cli, ["ix", "demo.ipynb", "-s", "raise RuntimeError('boom')", "--brief"])
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["status"] == "failed"
+
+
+def test_exec_no_wait_exits_zero_even_when_unresolved(runner, fake_notebooks, monkeypatch):
+    # --no-wait opts out of waiting for the result, so the exit code cannot
+    # reflect a failure that has not happened yet; it stays 0.
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    nb.cells.insert_code("raise RuntimeError('boom')", id="code-1")
+    nb.next_job_transitions.append([{"status": JobStatus.FAILED}])
+
+    result = runner.invoke(cli, ["exec", "demo.ipynb", "code-1", "--brief", "--no-wait"])
+
+    assert result.exit_code == 0
 
 
 def test_batch_ix_brief_emits_only_final_aggregate_with_output_previews(
@@ -1082,7 +1162,9 @@ def test_ix_failure_returns_repair_hints(runner, fake_notebooks, monkeypatch):
 
     result = runner.invoke(cli, ["ix", "demo.ipynb", "-s", "raise RuntimeError('boom')"])
 
-    assert result.exit_code == 0
+    # Nonzero exit on failure, but the JSON payload and repair hints are still
+    # emitted first so callers retain the recovery guidance.
+    assert result.exit_code != 0
     payload = json.loads(result.output.strip().splitlines()[-1])
     assert payload["job"]["status"] == "failed"
     assert any("edit replace demo.ipynb cell-1" in hint for hint in payload["hints"])
