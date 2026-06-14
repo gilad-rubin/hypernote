@@ -1551,6 +1551,24 @@ def test_cat_mime_full_output_returns_intact_payloads(runner, fake_notebooks, mo
     assert "data_truncated" not in bundle
 
 
+def test_cat_mime_full_flag_alone_does_not_bypass_truncation(runner, fake_notebooks, monkeypatch):
+    # --full controls source only; output fullness needs --full-output, the same
+    # contract as --output/--tail-output (no special case for --mime).
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    _insert_fake_plot_cell(nb)
+
+    result = runner.invoke(
+        cli, ["cat", "demo.ipynb", "--mime", "plot-1", "--full", "--max-output", "20"]
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    bundle = payload["mime_bundles"][0]
+    assert bundle["data"]["image/png"] == CLI_PNG_BASE64[:20]
+    assert bundle["data_truncated"]["image/png"] == len(CLI_PNG_BASE64)
+
+
 def test_cat_mime_brief_drops_summary_and_hints(runner, fake_notebooks, monkeypatch):
     monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
     nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))

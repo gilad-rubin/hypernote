@@ -286,7 +286,7 @@ class CellStatus:
                 if mime_type not in data:
                     continue
                 content = _joined_data_content(data[mime_type])
-                if not isinstance(content, str):
+                if not isinstance(content, str) or not content.strip():
                     continue
                 path = target / f"{_safe_file_stem(self.id)}-out{index}.{extension}"
                 try:
@@ -1355,9 +1355,37 @@ def _has_error_output(outputs: Iterable[dict[str, Any]]) -> bool:
     return any(output.get("output_type") == "error" for output in outputs)
 
 
+def _is_summarized_output(output: dict[str, Any]) -> bool:
+    """True when an output came from _summarize_output rather than raw nbformat.
+
+    The summary-first status (`nb.status()` without ``full=True``) replaces every
+    output with a truncated preview. Those previews carry tell-tale fields that
+    raw nbformat outputs never have, and they drop the raw fields each output
+    type must have (a ``data`` dict for display outputs, a ``traceback`` list for
+    errors). We refuse to export them as MIME bundles so a clipped preview is
+    never handed back as if it were intact data.
+    """
+    output_type = output.get("output_type")
+    # Rich display outputs lose their `data` dict (replaced by `data_keys`).
+    if "data_keys" in output:
+        return True
+    # Any clipped preview (stream/error/display) carries truncation markers.
+    if output.get("truncated") is True or "total_chars" in output:
+        return True
+    # Display outputs must carry a raw `data` dict; summaries do not.
+    if output_type in {"display_data", "execute_result", "update_display_data"} and not isinstance(
+        output.get("data"), dict
+    ):
+        return True
+    # Errors must carry the raw `traceback` list; summaries drop it for a preview.
+    if output_type == "error" and "traceback" not in output:
+        return True
+    return False
+
+
 def _require_raw_outputs(outputs: Iterable[dict[str, Any]]) -> None:
     for output in outputs:
-        if "data_keys" in output and "data" not in output:
+        if _is_summarized_output(output):
             raise HypernoteError(
                 "Cell outputs are summarized, so raw MIME data is unavailable. "
                 "Build the status with nb.status(full=True) or "
@@ -1373,7 +1401,13 @@ def _joined_data_content(value: Any) -> Any:
 
 def _safe_file_stem(value: str) -> str:
     stem = re.sub(r"[^A-Za-z0-9._-]", "-", value)
-    return stem or "cell"
+    if stem == value:
+        return stem or "cell"
+    # Sanitizing is lossy (e.g. "cell/1" and "cell:1" both -> "cell-1"), so append
+    # a stable hash of the original id to keep distinct cells from colliding.
+    digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:8]
+    base = stem.strip("-") or "cell"
+    return f"{base}-{digest}"
 
 
 def _output_mime_bundle(

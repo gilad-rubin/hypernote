@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import urllib.parse
+from pathlib import Path
 
 import httpx
 import pytest
@@ -711,3 +712,79 @@ def test_save_image_outputs_writes_svg_as_utf8(tmp_path):
     assert saved == [str(tmp_path / "svg" / "svg-cell-out0.svg")]
     # Round-trips via UTF-8 regardless of the platform's locale encoding.
     assert (tmp_path / "svg" / "svg-cell-out0.svg").read_text(encoding="utf-8") == svg
+
+
+def test_output_mime_bundles_reject_summarized_stream_outputs():
+    state, transport = _make_transport()
+    path = "tmp/sdk-mime-summarized-stream.ipynb"
+    nb = hypernote.connect(path, create=True, server="http://test", transport=transport)
+    cell = nb.cells.insert_code("print('x' * 500)", id="stream-cell")
+    stored_cell = state["notebooks"][path]["cells"][0]
+    stored_cell["outputs"] = [{"output_type": "stream", "name": "stdout", "text": "x" * 500}]
+
+    # Default (summarized) status truncates the stream preview; exporting it as a
+    # MIME bundle would hand back the clipped text as if it were intact data.
+    status = nb.status()
+
+    with pytest.raises(HypernoteError, match="full=True"):
+        status.cell(cell.id).output_mime_bundles()
+
+
+def test_output_mime_bundles_reject_summarized_error_outputs():
+    state, transport = _make_transport()
+    path = "tmp/sdk-mime-summarized-error.ipynb"
+    nb = hypernote.connect(path, create=True, server="http://test", transport=transport)
+    cell = nb.cells.insert_code("1 / 0", id="boom-cell")
+    stored_cell = state["notebooks"][path]["cells"][0]
+    stored_cell["outputs"] = [
+        {
+            "output_type": "error",
+            "ename": "ZeroDivisionError",
+            "evalue": "division by zero",
+            "traceback": ["Traceback", "ZeroDivisionError: division by zero"],
+        }
+    ]
+
+    # Summarized errors drop the raw traceback for a preview, so they must be
+    # rejected just like summarized rich outputs.
+    status = nb.status()
+
+    with pytest.raises(HypernoteError, match="full=True"):
+        status.cell(cell.id).output_mime_bundles()
+
+
+def test_save_image_outputs_disambiguates_colliding_cell_ids(tmp_path):
+    state, transport = _make_transport()
+    path = "tmp/sdk-save-collide.ipynb"
+    nb = hypernote.connect(path, create=True, server="http://test", transport=transport)
+    # "fig/1" and "fig:1" both sanitize to "fig-1"; the stem hash keeps them apart.
+    nb.cells.insert_code("plot()", id="fig/1")
+    nb.cells.insert_code("plot()", id="fig:1")
+    for stored_cell in state["notebooks"][path]["cells"]:
+        stored_cell["outputs"] = [
+            {"output_type": "display_data", "data": {"image/png": PNG_BASE64}, "metadata": {}}
+        ]
+
+    saved = nb.status(full=True).save_image_outputs(tmp_path / "imgs")
+
+    assert len(saved) == 2
+    assert len(set(saved)) == 2  # no collision -> two distinct files
+    for written in saved:
+        assert (tmp_path / "imgs" / Path(written).name).read_bytes() == PNG_SOURCE_BYTES
+
+
+def test_save_image_outputs_skips_empty_payloads(tmp_path):
+    state, transport = _make_transport()
+    path = "tmp/sdk-save-empty-payload.ipynb"
+    nb = hypernote.connect(path, create=True, server="http://test", transport=transport)
+    cell = nb.cells.insert_code("plot()", id="blank-cell")
+    stored_cell = state["notebooks"][path]["cells"][0]
+    stored_cell["outputs"] = [
+        {"output_type": "display_data", "data": {"image/png": "   \n  "}, "metadata": {}}
+    ]
+
+    saved = nb.status(full=True).cell(cell.id).save_image_outputs(tmp_path / "blank")
+
+    # Whitespace-only payload writes no 0-byte file.
+    assert saved == []
+    assert list((tmp_path / "blank").iterdir()) == []

@@ -1598,7 +1598,9 @@ def cat_cmd(
         notebook,
         include_outputs=not no_outputs,
         full_source=full,
-        full_output=full_output or (full and bool(mime_cell_id)),
+        # `--full` controls source; output fullness is governed uniformly by
+        # `--full-output` across --output/--tail-output/--mime (no special case).
+        full_output=full_output,
         max_output_chars=max_output,
         cell_id=cell_id,
         output_cell_id=output_cell_id,
