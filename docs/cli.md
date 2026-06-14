@@ -84,7 +84,7 @@ Commands that wait on a job (`run-all`, `restart-run-all`, `exec`, `ix`, and
 `job await`) exit nonzero when the run does not succeed, so scripts can branch
 on `$?` without parsing JSON:
 
-- `0` — the job(s) succeeded, or ended `awaiting-input` (a recoverable pause).
+- `0` — the job(s) succeeded, or ended `awaiting_input` (a recoverable pause).
 - `1` — the job ended `failed` or `interrupted`. The JSON result (including a
   batch `ix` partial-state summary with `halt_reason`) is still written to
   stdout first; only the process exit code reflects the failure.
