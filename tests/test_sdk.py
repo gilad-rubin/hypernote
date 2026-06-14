@@ -162,6 +162,13 @@ def _make_transport():
             return httpx.Response(200, request=request, json=state["runtime"])
 
         if path.endswith("/runtime/stop") and method == "POST":
+            # Mirror the server: no runtime room for the notebook -> 404.
+            if state["runtime"]["state"] == "stopped":
+                return httpx.Response(
+                    404,
+                    request=request,
+                    json={"message": "No runtime for notebook"},
+                )
             state["runtime"]["state"] = "stopped"
             state["runtime"]["kernel_id"] = None
             state["runtime"]["session_id"] = None
@@ -246,6 +253,30 @@ def test_cell_run_runtime_and_restart():
 
     restarted = nb.restart()
     assert restarted.status == RuntimeStatus.LIVE_ATTACHED
+
+
+def test_restart_with_no_live_runtime_brings_up_kernel():
+    # Regression: on a notebook whose kernel was never opened, the server
+    # returns 404 for POST .../runtime/stop. restart() must treat that as a
+    # no-op stop and still ensure a fresh runtime instead of erroring with
+    # "Resource not found".
+    _, transport = _make_transport()
+    nb = hypernote.connect("tmp/sdk.ipynb", create=True, server="http://test", transport=transport)
+    nb.cells.insert_code("print(42)", id="hello-cell")
+
+    assert nb.runtime.status == RuntimeStatus.STOPPED
+
+    restarted = nb.restart()
+    assert restarted.status == RuntimeStatus.LIVE_ATTACHED
+
+
+def test_stop_is_idempotent_when_no_runtime():
+    # Stopping a runtime that was never opened is a no-op, not an error.
+    _, transport = _make_transport()
+    nb = hypernote.connect("tmp/sdk.ipynb", create=True, server="http://test", transport=transport)
+
+    stopped = nb.runtime.stop()
+    assert stopped.status == RuntimeStatus.STOPPED
 
 
 def test_job_wait_timeout_surfaces_recovery_hint():
