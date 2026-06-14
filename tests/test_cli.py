@@ -1509,6 +1509,29 @@ def test_job_await_uses_sdk_control_lookup(runner, fake_notebooks, monkeypatch):
     assert payload["job"]["status"] == "succeeded"
 
 
+def test_job_await_exits_nonzero_when_job_fails(runner, fake_notebooks, monkeypatch):
+    # job await is the async counterpart to exec/run-all (exec --no-wait, then
+    # job await), so a failed job surfaces in its exit code just like a direct run.
+    monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
+    nb = fake_notebooks.setdefault("demo.ipynb", FakeNotebook("demo.ipynb"))
+    nb.cells.insert_code("raise RuntimeError('boom')", id="code-1")
+    job = nb._create_job(("code-1",))
+    job.status = JobStatus.FAILED
+
+    class FakeControl:
+        def get_job(self, job_id: str) -> FakeJob:
+            assert job_id == "job-1"
+            return job
+
+    monkeypatch.setattr(cli_main, "_sdk_control", lambda ctx: FakeControl())
+
+    result = runner.invoke(cli, ["job", "await", "job-1"])
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output.strip().splitlines()[-1])
+    assert payload["job"]["status"] == "failed"
+
+
 def test_setup_doctor_uses_sdk_control(runner, monkeypatch):
     monkeypatch.setattr(cli_main, "_stdout_is_tty", lambda: False)
 
